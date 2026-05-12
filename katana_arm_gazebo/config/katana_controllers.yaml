@@ -1,0 +1,29 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    katana_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+katana_arm_controller:
+  ros__parameters:
+    joints:
+      - katana_motor1_pan_joint
+      - katana_motor2_lift_joint
+      - katana_motor3_lift_joint
+      - katana_motor4_lift_joint
+      - katana_motor5_wrist_roll_joint
+
+    command_interfaces:
+      - position
+
+    state_interfaces:
+      - position
+      - velocity
+
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false

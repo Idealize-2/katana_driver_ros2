@@ -16,6 +16,8 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(katana_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(action_msgs REQUIRED)
+find_package(control_msgs REQUIRED)
 
 find_package(Boost REQUIRED COMPONENTS system thread)
 find_package(PkgConfig REQUIRED)
@@ -29,7 +31,9 @@ add_executable(katana src/KatanaNode.cpp
                       src/Katana300.cpp
                       src/SimulatedKatana.cpp
                       src/KNIConverter.cpp
-                      src/spline_functions.cpp)
+                      src/spline_functions.cpp
+                      src/JointStatePublisher.cpp
+                      src/joint_trajectory_action_controller.cpp)
 ament_target_dependencies(katana
   rclcpp
   rclcpp_action
@@ -41,6 +45,7 @@ ament_target_dependencies(katana
   tf2_ros
   katana_msgs
   geometry_msgs
+  control_msgs
 )
 target_link_libraries(katana ${Boost_LIBRARIES} ${ARMADILLO_LIBRARIES})
 target_include_directories(katana PUBLIC ${ARMADILLO_INCLUDE_DIRS})

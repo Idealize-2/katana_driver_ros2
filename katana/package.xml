@@ -25,6 +25,8 @@
   <depend>tf2_ros</depend>
   <depend>katana_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>control_msgs</depend>
   <depend>armadillo</depend>
 
   <export>

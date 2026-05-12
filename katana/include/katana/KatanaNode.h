@@ -11,6 +11,8 @@
 #include <katana/Katana.h>
 #include <katana/Katana300.h>
 #include <katana/SimulatedKatana.h>
+#include <katana/JointStatePublisher.h>
+#include <katana/joint_trajectory_action_controller.h>
 
 #include <memory>
 
@@ -29,6 +31,8 @@ private:
   void loop();
 
   std::shared_ptr<katana::AbstractKatana> katana_;
+  std::shared_ptr<katana::JointStatePublisher> joint_state_publisher_;
+  std::shared_ptr<katana::JointTrajectoryActionController> jt_action_controller_;
   
   rclcpp::TimerBase::SharedPtr timer_;
 };

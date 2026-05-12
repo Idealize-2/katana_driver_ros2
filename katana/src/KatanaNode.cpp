@@ -3,6 +3,8 @@
  */
 
 #include <katana/KatanaNode.h>
+#include <katana/JointStatePublisher.h>
+#include <katana/joint_trajectory_action_controller.h>
 
 namespace katana
 {
@@ -44,6 +46,9 @@ void KatanaNode::init()
     }
   }
 
+  joint_state_publisher_ = std::make_shared<JointStatePublisher>(katana_, shared_from_this());
+  jt_action_controller_ = std::make_shared<JointTrajectoryActionController>(katana_, shared_from_this());
+
   timer_ = this->create_wall_timer(
     std::chrono::milliseconds(40), // 25 Hz
     std::bind(&KatanaNode::loop, this));
@@ -56,6 +61,8 @@ KatanaNode::~KatanaNode()
 void KatanaNode::loop()
 {
   katana_->refreshEncoders();
+  joint_state_publisher_->update();
+  jt_action_controller_->update();
 }
 
 }

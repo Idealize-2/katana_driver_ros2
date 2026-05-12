@@ -1,25 +1,5 @@
 /*
- * UOS-ROS packages - Robot Operating System code by the University of Osnabrück
- * Copyright (C) 2010  University of Osnabrück
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- *
  * JointStatePublisher.cpp
- *
- *  Created on: 06.12.2010
- *      Author: Martin Günther <mguenthe@uos.de>
  */
 
 #include "katana/JointStatePublisher.h"
@@ -27,11 +7,11 @@
 namespace katana
 {
 
-JointStatePublisher::JointStatePublisher(boost::shared_ptr<AbstractKatana> katana) :
-  katana(katana)
+JointStatePublisher::JointStatePublisher(std::shared_ptr<AbstractKatana> katana, rclcpp::Node::SharedPtr node) :
+  katana_(katana),
+  node_(node)
 {
-  ros::NodeHandle nh;
-  pub = nh.advertise<sensor_msgs::JointState> ("joint_states", 1000);
+  pub_ = node_->create_publisher<sensor_msgs::msg::JointState>("joint_states", 10);
 }
 
 JointStatePublisher::~JointStatePublisher()
@@ -41,10 +21,10 @@ JointStatePublisher::~JointStatePublisher()
 void JointStatePublisher::update()
 {
   /* ************** Publish joint angles ************** */
-  sensor_msgs::JointStatePtr msg = boost::make_shared<sensor_msgs::JointState>();
-  std::vector<std::string> joint_names = katana->getJointNames();
-  std::vector<double> angles = katana->getMotorAngles();
-  std::vector<double> vels = katana->getMotorVelocities();
+  auto msg = std::make_unique<sensor_msgs::msg::JointState>();
+  std::vector<std::string> joint_names = katana_->getJointNames();
+  std::vector<double> angles = katana_->getMotorAngles();
+  std::vector<double> vels = katana_->getMotorVelocities();
 
   for (size_t i = 0; i < NUM_JOINTS; i++)
   {
@@ -53,16 +33,16 @@ void JointStatePublisher::update()
     msg->velocity.push_back(vels[i]);
   }
 
-  msg->name.push_back(katana->getGripperJointNames()[0]);
+  msg->name.push_back(katana_->getGripperJointNames()[0]);
   msg->position.push_back(angles[5]);
   msg->velocity.push_back(vels[5]);
 
-  msg->name.push_back(katana->getGripperJointNames()[1]);
+  msg->name.push_back(katana_->getGripperJointNames()[1]);
   msg->position.push_back(angles[5]); // both right and left finger are controlled by motor 6
   msg->velocity.push_back(vels[5]);
 
-  msg->header.stamp = ros::Time::now();
-  pub.publish(msg); // NOTE: msg must not be changed after publishing; use reset() if necessary (http://www.ros.org/wiki/roscpp/Internals)
+  msg->header.stamp = node_->now();
+  pub_->publish(std::move(msg));
 }
 
 }

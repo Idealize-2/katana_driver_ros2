@@ -3,31 +3,9 @@
 <robot xmlns:xacro="http://ros.org/wiki/xacro">
 
   <gazebo>
-    <plugin name="gazebo_ros_control" filename="libgazebo_ros_control.so">
-      <robotSimType>gazebo_ros_control/DefaultRobotHWSim</robotSimType>
+    <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
+      <parameters>$(find katana_arm_gazebo)/config/katana_controllers.yaml</parameters>
     </plugin>
-
-    <!-- gripper controller -->
-    <plugin name="katana_gripper_controller" filename="libgazebo_ros_katana_gripper.so">
-      <alwaysOn>true</alwaysOn>
-      <node_namespace>katana</node_namespace>
-      <r_finger_joint>katana_r_finger_joint</r_finger_joint>
-      <l_finger_joint>katana_l_finger_joint</l_finger_joint>
-      <updateRate>1000.0</updateRate>
-      <max_torque>0.5</max_torque>
-    </plugin>
-
-    <!-- a formal implementation of grasp hack in gazebo with fixed joint -->
-    <gripper name="katana_gripper_grasp_hack">
-      <grasp_check>
-        <attach_steps>20</attach_steps>
-        <detach_steps>40</detach_steps>
-        <min_contact_count>2</min_contact_count>
-      </grasp_check>
-      <gripper_link>katana_r_finger_link</gripper_link>
-      <gripper_link>katana_l_finger_link</gripper_link>
-      <palm_link>katana_gripper_link</palm_link>
-    </gripper>
   </gazebo>
 
 

@@ -1,22 +1,18 @@
 <?xml version="1.0"?>
-<package>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
   <name>katana_description</name>
   <version>1.1.2</version>
   <description>
     This package contains an URDF description of the Katana arm and all supporting mesh files.
   </description>
-  <author email="mguenthe@uni-osnabrueck.de">Martin Günther</author>
+  <author>Martin Günther</author>
   <maintainer email="mguenthe@uni-osnabrueck.de">Martin Günther</maintainer>
   <license>GPL</license>
-  <url type="website">http://ros.org/wiki/katana_description</url>
 
-  <build_depend>urdf</build_depend>
-  <build_depend>convex_decomposition</build_depend>
-  <build_depend>ivcon</build_depend>
-  <build_depend>transmission_interface</build_depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <run_depend>urdf</run_depend>
-  <run_depend>transmission_interface</run_depend>
-
-  <buildtool_depend>catkin</buildtool_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
 </package>
