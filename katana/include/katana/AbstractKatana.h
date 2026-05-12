@@ -25,27 +25,31 @@
 #ifndef ABSTRACTKATANA_H_
 #define ABSTRACTKATANA_H_
 
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 #include <urdf/model.h>
 #include <urdf_model/joint.h>
 
 #include <katana/SpecifiedTrajectory.h>
 #include <katana/katana_constants.h>
 
-#include <moveit_msgs/JointLimits.h>
-
 namespace katana
 {
+
+struct JointLimit {
+  std::string joint_name;
+  double min_position;
+  double max_position;
+};
 
 class AbstractKatana
 {
 public:
-  AbstractKatana();
+  AbstractKatana(rclcpp::Node::SharedPtr node);
   virtual ~AbstractKatana();
 
   virtual void refreshEncoders() = 0;
-  virtual bool executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
-                                 boost::function<bool()> isPreemptRequested) = 0;
+  virtual bool executeTrajectory(std::shared_ptr<SpecifiedTrajectory> traj,
+                                 std::function<bool()> isPreemptRequested) = 0;
   virtual void freezeRobot();
 
   /**
@@ -69,7 +73,7 @@ public:
   virtual std::vector<double> getMotorAngles();
   virtual std::vector<double> getMotorVelocities();
 
-  virtual std::vector<moveit_msgs::JointLimits> getMotorLimits();
+  virtual std::vector<JointLimit> getMotorLimits();
   virtual double getMotorLimitMax(std::string joint_name);
   virtual double getMotorLimitMin(std::string joint_name);
 
@@ -80,6 +84,7 @@ public:
 
 
 protected:
+  rclcpp::Node::SharedPtr node_;
   // only the 5 "real" joints:
   std::vector<std::string> joint_names_;
   std::vector<int> joint_types_;
@@ -95,7 +100,7 @@ protected:
 
   // the motor limits of the 6 motors
 
-  std::vector<moveit_msgs::JointLimits> motor_limits_;
+  std::vector<JointLimit> motor_limits_;
 };
 
 }

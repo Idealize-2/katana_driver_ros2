@@ -25,7 +25,7 @@
 #ifndef KNICONVERTER_H_
 #define KNICONVERTER_H_
 
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 #include <KNI/kmlFactories.h>
 
 #include <katana/katana_constants.h>

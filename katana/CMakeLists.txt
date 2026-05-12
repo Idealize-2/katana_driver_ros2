@@ -1,81 +1,69 @@
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.8)
 project(katana)
 
-add_compile_options(-std=c++11)
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
 
-find_package(catkin REQUIRED COMPONENTS
-  roscpp
-  roslib
-  kni
-  std_srvs
-  sensor_msgs
-  actionlib
-  control_msgs
-  trajectory_msgs
-  urdf
-  tf
-  katana_msgs
-  geometry_msgs
-  moveit_msgs
-  geometry_msgs
-)
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(kni REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(urdf REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(katana_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 find_package(Boost REQUIRED COMPONENTS system thread)
-
-catkin_package(
-  INCLUDE_DIRS include
-  LIBRARIES
-  CATKIN_DEPENDS
-    roscpp
-    roslib
-    kni
-    std_srvs
-    sensor_msgs
-    actionlib
-    control_msgs
-    trajectory_msgs
-    urdf
-    tf
-    katana_msgs
-    geometry_msgs
-    moveit_msgs
-    geometry_msgs
-  DEPENDS
-    Boost
-)
-
-include_directories(include ${catkin_INCLUDE_DIRS})
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ARMADILLO REQUIRED armadillo)
+include_directories(include
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../kni/KNI_4.3.0/include)
 
 add_executable(katana src/KatanaNode.cpp
                       src/AbstractKatana.cpp
                       src/Katana.cpp
                       src/Katana300.cpp
                       src/SimulatedKatana.cpp
-                      src/JointStatePublisher.cpp
-                      src/joint_trajectory_action_controller.cpp
-                      src/joint_movement_action_controller.cpp
                       src/KNIConverter.cpp
-                      src/spline_functions.cpp
-                      src/katana_gripper_grasp_controller.cpp)
-target_link_libraries(katana ${catkin_LIBRARIES})
-add_dependencies(katana ${PROJECT_NAME} ${catkin_EXPORTED_TARGETS})
+                      src/spline_functions.cpp)
+ament_target_dependencies(katana
+  rclcpp
+  rclcpp_action
+  kni
+  std_srvs
+  sensor_msgs
+  urdf
+  tf2
+  tf2_ros
+  katana_msgs
+  geometry_msgs
+)
+target_link_libraries(katana ${Boost_LIBRARIES} ${ARMADILLO_LIBRARIES})
+target_include_directories(katana PUBLIC ${ARMADILLO_INCLUDE_DIRS})
 
-add_executable(katana_arm_kinematics src/KNIConverter.cpp
-                      src/KNIKinematics.cpp)
-target_link_libraries(katana_arm_kinematics ${catkin_LIBRARIES})
-add_dependencies(katana_arm_kinematics ${PROJECT_NAME} ${catkin_EXPORTED_TARGETS})
+# add_executable(katana_arm_kinematics src/KNIConverter.cpp
+#                       src/KNIKinematics.cpp)
+# ament_target_dependencies(katana_arm_kinematics
+#   rclcpp
+#   kni
+#   tf2
+#   katana_msgs
+# )
 
-install(TARGETS katana katana_arm_kinematics
-        RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(TARGETS katana
+  DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/${PROJECT_NAME}/
-    DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION})
+  DESTINATION include/${PROJECT_NAME})
 
-install(DIRECTORY launch
-    DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
+install(DIRECTORY launch config
+  DESTINATION share/${PROJECT_NAME})
 
-install(DIRECTORY config
-    DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
+install(PROGRAMS nodes/fake_katana_joint_publisher.py
+  DESTINATION lib/${PROJECT_NAME})
 
-catkin_install_python(PROGRAMS nodes/fake_katana_joint_publisher.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+ament_package()

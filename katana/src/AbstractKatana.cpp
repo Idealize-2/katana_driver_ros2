@@ -27,7 +27,7 @@
 namespace katana
 {
 
-AbstractKatana::AbstractKatana()
+AbstractKatana::AbstractKatana(rclcpp::Node::SharedPtr node) : node_(node)
 {
   // names and types for the 5 "real" joints
   joint_names_.resize(NUM_JOINTS);
@@ -44,87 +44,57 @@ AbstractKatana::AbstractKatana()
   motor_limits_.resize(NUM_MOTORS + 1);
 
   /* ********* get parameters ********* */
-  // ros::NodeHandle pn("~");
-  ros::NodeHandle n;
-
   std::string robot_desc_string;
 
-  if (!n.getParam("robot_description", robot_desc_string))
+  if (!node->get_parameter("robot_description", robot_desc_string))
   {
-    ROS_FATAL("Couldn't get a robot_description from the param server");
+    RCLCPP_FATAL(node->get_logger(), "Couldn't get a robot_description from the param server");
     return;
   }
 
   urdf::Model model;
   model.initString(robot_desc_string);
 
-  XmlRpc::XmlRpcValue joint_names;
-
+  std::vector<std::string> joint_names;
   // Gets all of the joints
-  if (!n.getParam("katana_joints", joint_names))
+  node->declare_parameter("katana_joints", std::vector<std::string>());
+  if (!node->get_parameter("katana_joints", joint_names) || joint_names.empty())
   {
-    ROS_ERROR("No joints given. (namespace: %s)", n.getNamespace().c_str());
-  }
-  if (joint_names.getType() != XmlRpc::XmlRpcValue::TypeArray)
-  {
-    ROS_ERROR("Malformed joint specification.  (namespace: %s)", n.getNamespace().c_str());
+    RCLCPP_ERROR(node->get_logger(), "No joints given.");
   }
   if (joint_names.size() != (size_t)NUM_JOINTS)
   {
-    ROS_ERROR("Wrong number of joints! was: %d, expected: %zu", joint_names.size(), NUM_JOINTS);
+    RCLCPP_ERROR(node->get_logger(), "Wrong number of joints! was: %zu, expected: %zu", joint_names.size(), NUM_JOINTS);
   }
   for (size_t i = 0; i < NUM_JOINTS; ++i)
   {
-    XmlRpc::XmlRpcValue &name_value = joint_names[i];
-    if (name_value.getType() != XmlRpc::XmlRpcValue::TypeString)
-    {
-      ROS_ERROR("Array of joint names should contain all strings.  (namespace: %s)",
-          n.getNamespace().c_str());
-    }
-
-    joint_names_[i] = (std::string)name_value;
+    joint_names_[i] = joint_names[i];
     joint_types_[i] = urdf::Joint::REVOLUTE; // all of our joints are of type revolute
 
-    motor_limits_[i].joint_name = (std::string)name_value;
+    motor_limits_[i].joint_name = joint_names_[i];
     motor_limits_[i].min_position = model.getJoint(joint_names_[i])->limits->lower;
     motor_limits_[i].max_position = model.getJoint(joint_names_[i])->limits->upper;
-
-    //ROS_INFO("Setting MotorLimit for %s to min: %f - max: %f", motor_limits_[i].joint_name.c_str(), motor_limits_[i].min_position, motor_limits_[i].max_position);
-
   }
 
-  XmlRpc::XmlRpcValue gripper_joint_names;
-
+  std::vector<std::string> gripper_joint_names;
+  node->declare_parameter("katana_gripper_joints", std::vector<std::string>());
   // Gets all of the joints
-  if (!n.getParam("katana_gripper_joints", gripper_joint_names))
+  if (!node->get_parameter("katana_gripper_joints", gripper_joint_names) || gripper_joint_names.empty())
   {
-    ROS_ERROR("No gripper_joints given. (namespace: %s)", n.getNamespace().c_str());
-  }
-  if (gripper_joint_names.getType() != XmlRpc::XmlRpcValue::TypeArray)
-  {
-    ROS_ERROR("Malformed gripper_joint specification.  (namespace: %s)", n.getNamespace().c_str());
+    RCLCPP_ERROR(node->get_logger(), "No gripper_joints given.");
   }
   if ((size_t)gripper_joint_names.size() != NUM_GRIPPER_JOINTS)
   {
-    ROS_ERROR("Wrong number of gripper_joints! was: %d, expected: %zu", gripper_joint_names.size(), NUM_GRIPPER_JOINTS);
+    RCLCPP_ERROR(node->get_logger(), "Wrong number of gripper_joints! was: %zu, expected: %zu", gripper_joint_names.size(), NUM_GRIPPER_JOINTS);
   }
   for (size_t i = 0; i < NUM_GRIPPER_JOINTS; ++i)
   {
-    XmlRpc::XmlRpcValue &name_value = gripper_joint_names[i];
-    if (name_value.getType() != XmlRpc::XmlRpcValue::TypeString)
-    {
-      ROS_ERROR("Array of gripper joint names should contain all strings.  (namespace: %s)",
-          n.getNamespace().c_str());
-    }
-
-    gripper_joint_names_[i] = (std::string)name_value;
+    gripper_joint_names_[i] = gripper_joint_names[i];
     gripper_joint_types_[i] = urdf::Joint::REVOLUTE; // all of our joints are of type revolute
 
-    motor_limits_[NUM_JOINTS + i].joint_name = (std::string)name_value;
+    motor_limits_[NUM_JOINTS + i].joint_name = gripper_joint_names_[i];
     motor_limits_[NUM_JOINTS + i].min_position = model.getJoint(gripper_joint_names_[i])->limits->lower;
     motor_limits_[NUM_JOINTS + i].max_position = model.getJoint(gripper_joint_names_[i])->limits->upper;
-
-    // ROS_INFO("Setting MotorLimit for %s to min: %f - max: %f", motor_limits_[NUM_JOINTS + i].joint_name.c_str(), motor_limits_[NUM_JOINTS + i].min_position, motor_limits_[NUM_JOINTS + i].max_position);
   }
 }
 
@@ -158,7 +128,7 @@ int AbstractKatana::getJointIndex(std::string joint_name)
       return GRIPPER_INDEX;
   }
 
-  ROS_ERROR("Joint not found: %s.", joint_name.c_str());
+  RCLCPP_ERROR(rclcpp::get_logger("katana"), "Joint not found: %s.", joint_name.c_str());
   return -1;
 }
 
@@ -192,7 +162,7 @@ std::vector<double> AbstractKatana::getMotorVelocities()
   return motor_velocities_;
 }
 
-std::vector<moveit_msgs::JointLimits> AbstractKatana::getMotorLimits()
+std::vector<JointLimit> AbstractKatana::getMotorLimits()
 {
   return motor_limits_;
 }

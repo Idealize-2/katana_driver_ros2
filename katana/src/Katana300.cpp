@@ -30,8 +30,8 @@
 namespace katana
 {
 
-Katana300::Katana300() :
-    Katana()
+Katana300::Katana300(rclcpp::Node::SharedPtr node) :
+    Katana(node)
 {
   desired_angles_ = getMotorAngles();
   setLimits();
@@ -139,7 +139,7 @@ bool Katana300::allMotorsReady()
 
 void Katana300::testSpeed()
 {
-  ros::Rate idleWait(5);
+
   std::vector<double> pos1_angles(NUM_MOTORS);
   std::vector<double> pos2_angles(NUM_MOTORS);
 
@@ -171,12 +171,12 @@ void Katana300::testSpeed()
     int accel = kni->getMotorAccelerationLimit(i);
     int max_vel = kni->getMotorVelocityLimit(i);
 
-    ROS_INFO("Motor %zu - acceleration: %d (= %f), max speed: %d (=%f)", i, accel, 2.0 * converter->acc_enc2rad(i, accel), max_vel, converter->vel_enc2rad(i, max_vel));
-    ROS_INFO("KNI encoders: %d, %d", kni->GetBase()->GetMOT()->arr[i].GetEncoderMinPos(), kni->GetBase()->GetMOT()->arr[i].GetEncoderMaxPos());
-    ROS_INFO("moving to encoders: %d, %d", pos1_encoders, pos2_encoders);
-    ROS_INFO("current encoders: %d", kni->getMotorEncoders(i, true));
+    RCLCPP_INFO(node_->get_logger(), "Motor %zu - acceleration: %d (= %f), max speed: %d (=%f)", i, accel, 2.0 * converter->acc_enc2rad(i, accel), max_vel, converter->vel_enc2rad(i, max_vel));
+    RCLCPP_INFO(node_->get_logger(), "KNI encoders: %d, %d", kni->GetBase()->GetMOT()->arr[i].GetEncoderMinPos(), kni->GetBase()->GetMOT()->arr[i].GetEncoderMaxPos());
+    RCLCPP_INFO(node_->get_logger(), "moving to encoders: %d, %d", pos1_encoders, pos2_encoders);
+    RCLCPP_INFO(node_->get_logger(), "current encoders: %d", kni->getMotorEncoders(i, true));
 
-    ROS_INFO("Moving to min");
+    RCLCPP_INFO(node_->get_logger(), "Moving to min");
     {
       boost::recursive_mutex::scoped_lock lock(kni_mutex);
       kni->moveMotorToEnc(i, pos1_encoders, true, 50, 60000);
@@ -189,7 +189,7 @@ void Katana300::testSpeed()
 //
 //      } while (!allMotorsReady());
 
-    ROS_INFO("Moving to max");
+    RCLCPP_INFO(node_->get_logger(), "Moving to max");
     {
       boost::recursive_mutex::scoped_lock lock(kni_mutex);
       kni->moveMotorToEnc(i, pos2_encoders, true, 50, 60000);
@@ -220,19 +220,19 @@ void Katana300::testSpeed()
  *
  * @author Benjamin Reiner
  */
-bool Katana300::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
-                                  boost::function<bool()> isPreemptRequested)
+bool Katana300::executeTrajectory(std::shared_ptr<SpecifiedTrajectory> traj,
+                                  std::function<bool()> isPreemptRequested)
 {
-  ROS_DEBUG("Entered executeTrajectory. Spline size: %d, trajectory size: %d, number of motors: %d",
+  RCLCPP_DEBUG(node_->get_logger(), "Entered executeTrajectory. Spline size: %d, trajectory size: %d, number of motors: %d",
             (int )traj->at(0).splines.size(), (int )traj->size(), kni->getNumberOfMotors());
   try
   {
     // ------- wait until all motors idle
-    ros::Rate idleWait(10);
+    rclcpp::Rate idleWait(10);
     while (!allMotorsReady())
     {
       refreshMotorStatus();
-      ROS_DEBUG("Motor status: %d, %d, %d, %d, %d, %d", motor_status_[0], motor_status_[1], motor_status_[2],
+      RCLCPP_DEBUG(node_->get_logger(), "Motor status: %d, %d, %d, %d, %d, %d", motor_status_[0], motor_status_[1], motor_status_[2],
                 motor_status_[3], motor_status_[4], motor_status_[5]);
 
       // ------- check if motors are blocked
@@ -241,7 +241,7 @@ bool Katana300::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
       // become ready
       if (someMotorCrashed())
       {
-        ROS_WARN("Motors are crashed before executing trajectory! Unblocking...");
+        RCLCPP_WARN(node_->get_logger(), "Motors are crashed before executing trajectory! Unblocking...");
 
         boost::recursive_mutex::scoped_lock lock(kni_mutex);
         kni->unBlock();
@@ -251,18 +251,18 @@ bool Katana300::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
     }
 
     // ------- wait until start time
-    ros::Time start_time = ros::Time(traj->at(0).start_time);
-    double time_until_start = (start_time - ros::Time::now()).toSec();
+    rclcpp::Time start_time = rclcpp::Time(traj->at(0).start_time * 1e9);
+    double time_until_start = (start_time - node_->now()).seconds();
 
     if (time_until_start < -0.01)
     {
-      ROS_WARN("Trajectory started %f s too late! Scheduled: %f, started: %f", -time_until_start, start_time.toSec(),
-               ros::Time::now().toSec());
+      RCLCPP_WARN(node_->get_logger(), "Trajectory started %f s too late! Scheduled: %f, started: %f", -time_until_start, start_time.seconds(),
+               node_->now().seconds());
     }
     else if (time_until_start > 0.0)
     {
-      ROS_DEBUG("Sleeping %f seconds until scheduled start of trajectory", time_until_start);
-      ros::Time::sleepUntil(start_time);
+      RCLCPP_DEBUG(node_->get_logger(), "Sleeping %f seconds until scheduled start of trajectory", time_until_start);
+      rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(time_until_start)));
     }
 
     // ------- start trajectory
@@ -271,7 +271,7 @@ bool Katana300::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
     // fix start times: set the trajectory start time to now(); since traj is a shared pointer,
     // this fixes the current_trajectory_ in joint_trajectory_action_controller, which synchronizes
     // the "state" publishing to the actual start time (more or less)
-    double delay = ros::Time::now().toSec() - traj->at(0).start_time;
+    double delay = node_->now().seconds() - traj->at(0).start_time;
     for (size_t i = 0; i < traj->size(); i++)
     {
       traj->at(i).start_time += delay;
@@ -286,11 +286,11 @@ bool Katana300::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
     // iterate over all trajectory steps
     for (size_t step = 0; step < traj->size(); step++)
     {
-      ROS_DEBUG("Executing step %d", (int )step);
+      RCLCPP_DEBUG(node_->get_logger(), "Executing step %d", (int )step);
 
       if (isPreemptRequested())
       {
-        ROS_INFO("Preempt requested. Aborting the trajectory!");
+        RCLCPP_INFO(node_->get_logger(), "Preempt requested. Aborting the trajectory!");
         return true;
       }
 
@@ -299,20 +299,20 @@ bool Katana300::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
       // + 1 to be flexible enough to perform trajectories that include the gripper
       if (seg.splines.size() != joint_names_.size() && seg.splines.size() != (joint_names_.size() + 1))
       {
-        ROS_ERROR("Wrong number of joints in specified trajectory (was: %zu, expected: %zu)!", seg.splines.size(),
+        RCLCPP_ERROR(node_->get_logger(), "Wrong number of joints in specified trajectory (was: %zu, expected: %zu)!", seg.splines.size(),
                   joint_names_.size());
       }
 
       refreshMotorStatus();
       if (someMotorCrashed())
       {
-        ROS_ERROR("A motor crashed! Aborting to not destroy anything.");
+        RCLCPP_ERROR(node_->get_logger(), "A motor crashed! Aborting to not destroy anything.");
         return false;
       }
 
-      if (!ros::ok())
+      if (!rclcpp::ok())
       {
-        ROS_INFO("Stop trajectory because ROS node is stopped.");
+        RCLCPP_INFO(node_->get_logger(), "Stop trajectory because ROS node is stopped.");
         return true;
       }
 
@@ -333,20 +333,18 @@ bool Katana300::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
       }
 
       lock.unlock();
-      ros::spinOnce();
-      ros::Time::sleepUntil(ros::Time(seg.start_time));
+      rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(seg.start_time - node_->now().seconds())));
 
-      while (seg.start_time > ros::Time::now().toSec())
+      while (seg.start_time > node_->now().seconds())
       {
         if (isPreemptRequested())
         {
-          ROS_INFO("Preempt requested. Aborting the trajectory!");
+          RCLCPP_INFO(node_->get_logger(), "Preempt requested. Aborting the trajectory!");
           lock.lock();
           kni->freezeRobot();
           return true;
         }
-        ros::spinOnce();
-        ros::Duration(0.001).sleep();
+        rclcpp::sleep_for(std::chrono::milliseconds(1));
       }
       lock.lock();
       kni->startSplineMovement(false);
@@ -357,13 +355,13 @@ bool Katana300::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
   }
   catch (const WrongCRCException &e)
   {
-    ROS_ERROR(
+    RCLCPP_ERROR(node_->get_logger(), 
         "WrongCRCException: Two threads tried to access the KNI at once. This means that the locking in the Katana node is broken. (exception in executeTrajectory(): %s)",
         e.message().c_str());
   }
   catch (const ReadNotCompleteException &e)
   {
-    ROS_ERROR(
+    RCLCPP_ERROR(node_->get_logger(), 
         "ReadNotCompleteException: Another program accessed the KNI. Please stop it and restart the Katana node. (exception in executeTrajectory(): %s)",
         e.message().c_str());
   }
@@ -372,21 +370,21 @@ bool Katana300::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
     // TODO: find out what the real cause of this is when it happens again
     // the message returned by the Katana is:
     // FirmwareException : 'StopperThread: collision on axis: 1 (axis N)'
-    ROS_ERROR(
+    RCLCPP_ERROR(node_->get_logger(), 
         "FirmwareException: Motor collision? Perhaps we tried to send a trajectory that the arm couldn't follow. (exception in executeTrajectory(): %s)",
         e.message().c_str());
   }
   catch (const MotorTimeoutException &e)
   {
-    ROS_ERROR("MotorTimeoutException (exception in executeTrajectory(): %s)", e.what());
+    RCLCPP_ERROR(node_->get_logger(), "MotorTimeoutException (exception in executeTrajectory(): %s)", e.what());
   }
   catch (const Exception &e)
   {
-    ROS_ERROR("Unhandled exception in executeTrajectory(): %s", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in executeTrajectory(): %s", e.message().c_str());
   }
   catch (...)
   {
-    ROS_ERROR("Unhandled exception in executeTrajectory()");
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in executeTrajectory()");
   }
 
   return false;

@@ -27,7 +27,7 @@
 #ifndef KATANA300_H_
 #define KATANA300_H_
 
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 #include <boost/thread/recursive_mutex.hpp>
 #include <boost/thread.hpp>
 
@@ -44,13 +44,13 @@ namespace katana
 class Katana300 : public Katana
 {
 public:
-  Katana300();
+  Katana300(rclcpp::Node::SharedPtr node);
   virtual ~Katana300();
 
   virtual void setLimits();
 
-  virtual bool executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
-                                 boost::function<bool()> isPreemptRequested);
+  virtual bool executeTrajectory(std::shared_ptr<SpecifiedTrajectory> traj,
+                                 std::function<bool()> isPreemptRequested);
 
   virtual void freezeRobot();
   virtual bool moveJoint(int jointIndex, double turningAngle);

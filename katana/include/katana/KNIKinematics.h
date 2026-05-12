@@ -25,8 +25,8 @@
 #ifndef KNIKINEMATICS_H_
 #define KNIKINEMATICS_H_
 
-#include <ros/ros.h>
-#include <ros/package.h>
+#include <rclcpp/rclcpp.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <tf/transform_listener.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <moveit_msgs/GetPositionFK.h>

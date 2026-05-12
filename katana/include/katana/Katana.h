@@ -25,8 +25,8 @@
 #ifndef KATANA_H_
 #define KATANA_H_
 
-#include <ros/ros.h>
-#include <std_srvs/Empty.h>
+#include <rclcpp/rclcpp.hpp>
+#include <std_srvs/srv/empty.hpp>
 #include <boost/thread/recursive_mutex.hpp>
 #include <boost/thread.hpp>
 
@@ -48,13 +48,13 @@ namespace katana
 class Katana : public AbstractKatana
 {
 public:
-  Katana();
+  Katana(rclcpp::Node::SharedPtr node);
   virtual ~Katana();
 
   void refreshEncoders();
 
-  virtual bool executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
-                                 boost::function<bool()> isPreemptRequested);
+  virtual bool executeTrajectory(std::shared_ptr<SpecifiedTrajectory> traj,
+                                 std::function<bool()> isPreemptRequested);
 
   virtual void freezeRobot();
   virtual bool moveJoint(int jointIndex, double turningAngle);
@@ -77,20 +77,20 @@ protected:
   short round(const double x);
 
 private:
-  ros::ServiceServer switch_motors_off_srv_;
-  ros::ServiceServer switch_motors_on_srv_;
-  ros::ServiceServer test_speed_srv_;
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr switch_motors_off_srv_;
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr switch_motors_on_srv_;
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr test_speed_srv_;
 
   CCplSerialCRC* protocol;
   CCdlBase* device;
 
-  ros::Time last_encoder_update_;
+  rclcpp::Time last_encoder_update_;
 
   void calibrate();
 
-  bool switchMotorsOff(std_srvs::Empty::Request &request, std_srvs::Empty::Response &response);
-  bool switchMotorsOn(std_srvs::Empty::Request &request, std_srvs::Empty::Response &response);
-  bool testSpeedSrv(std_srvs::Empty::Request &request, std_srvs::Empty::Response &response);
+  bool switchMotorsOff(const std_srvs::srv::Empty::Request::SharedPtr request, std_srvs::srv::Empty::Response::SharedPtr response);
+  bool switchMotorsOn(const std_srvs::srv::Empty::Request::SharedPtr request, std_srvs::srv::Empty::Response::SharedPtr response);
+  bool testSpeedSrv(const std_srvs::srv::Empty::Request::SharedPtr request, std_srvs::srv::Empty::Response::SharedPtr response);
 };
 
 }

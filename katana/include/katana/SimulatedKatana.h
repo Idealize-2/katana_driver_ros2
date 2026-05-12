@@ -34,12 +34,12 @@ namespace katana
 class SimulatedKatana : public katana::AbstractKatana
 {
 public:
-  SimulatedKatana();
+  SimulatedKatana(rclcpp::Node::SharedPtr node);
   virtual ~SimulatedKatana();
 
   virtual void refreshEncoders();
-  virtual bool executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj,
-                                 boost::function<bool()> isPreemptRequested);
+  virtual bool executeTrajectory(std::shared_ptr<SpecifiedTrajectory> traj,
+                                 std::function<bool()> isPreemptRequested);
   virtual void moveGripper(double openingAngle);
   virtual bool moveJoint(int jointIndex, double turningAngle);
 
@@ -48,7 +48,7 @@ public:
   virtual bool allMotorsReady();
 
 private:
-  boost::shared_ptr<SpecifiedTrajectory> current_trajectory_;
+  std::shared_ptr<SpecifiedTrajectory> current_trajectory_;
 };
 
 }

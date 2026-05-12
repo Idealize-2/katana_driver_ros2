@@ -28,26 +28,23 @@
 namespace katana
 {
 
-Katana::Katana() :
-  AbstractKatana()
+Katana::Katana(rclcpp::Node::SharedPtr node) :
+  AbstractKatana(node)
 {
-  ros::NodeHandle nh;
-  ros::NodeHandle pn("~");
   motor_status_.resize(NUM_MOTORS);
 
   /* ********* get parameters ********* */
 
   // general parameters
-  std::string config_file_path;
-  bool use_serial;
+  std::string config_file_path = node->declare_parameter("config_file_path", "");
+  bool use_serial = node->declare_parameter("use_serial", false);
 
-  bool has_path = pn.getParam("config_file_path", config_file_path);
-  if (!has_path) {
-    ROS_ERROR("Required parameter config_file_path could not be found on param server!");
+  if (!node->get_parameter("config_file_path", config_file_path) || config_file_path.empty()) {
+    RCLCPP_ERROR(node->get_logger(), "Required parameter config_file_path could not be found on param server!");
     return;
   }
 
-  pn.param("use_serial", use_serial, false);
+
 
   converter = new KNIConverter(config_file_path);
 
@@ -55,16 +52,16 @@ Katana::Katana() :
   std::string ip;
   int tcpip_port;
 
-  pn.param<std::string> ("ip", ip, "192.168.1.1");
-  pn.param("port", tcpip_port, 5566);
+  ip = node->declare_parameter("ip", "192.168.1.1");
+  tcpip_port = node->declare_parameter("port", 5566);
 
   // parameters for serial connection
   int serial_port;
 
-  pn.param("serial_port", serial_port, 0);
+  serial_port = node->declare_parameter("serial_port", 0);
   if (serial_port < 0 || serial_port > 9)
   {
-    ROS_ERROR("serial_port must be in the range [0-9]!");
+    RCLCPP_ERROR(node_->get_logger(), "serial_port must be in the range [0-9]!");
     return;
   }
 
@@ -73,7 +70,7 @@ Katana::Katana() :
     /* ********* open device ********* */
     if (use_serial)
     {
-      ROS_INFO("trying to connect to katana (serial port: /dev/ttyS%d) ...", serial_port);
+      RCLCPP_INFO(node_->get_logger(), "trying to connect to katana (serial port: /dev/ttyS%d) ...", serial_port);
 
       TCdlCOMDesc serial_config;
       serial_config.port = serial_port; // serial port number (0-9 for /dev/ttyS[0-9])
@@ -85,32 +82,32 @@ Katana::Katana() :
       serial_config.wttc = 0; // write total timeout
 
       device = new CCdlCOM(serial_config);
-      ROS_INFO("success: serial connection to Katana opened");
+      RCLCPP_INFO(node_->get_logger(), "success: serial connection to Katana opened");
     }
     else
     {
-      ROS_INFO("trying to connect to katana (TCP/IP) on %s:%d...", ip.c_str(), tcpip_port);
+      RCLCPP_INFO(node_->get_logger(), "trying to connect to katana (TCP/IP) on %s:%d...", ip.c_str(), tcpip_port);
       char* nonconst_ip = strdup(ip.c_str());
       device = new CCdlSocket(nonconst_ip, tcpip_port);
       free(nonconst_ip);
-      ROS_INFO("success: TCP/IP connection to Katana opened");
+      RCLCPP_INFO(node_->get_logger(), "success: TCP/IP connection to Katana opened");
     }
 
     /* ********* init protocol ********* */
     protocol = new CCplSerialCRC();
-    ROS_INFO("success: protocol class instantiated");
+    RCLCPP_INFO(node_->get_logger(), "success: protocol class instantiated");
 
     protocol->init(device); //fails if no response from Katana
-    ROS_INFO("success: communication with Katana initialized");
+    RCLCPP_INFO(node_->get_logger(), "success: communication with Katana initialized");
 
     /* ********* init robot ********* */
     kni.reset(new CLMBase());
     kni->create(config_file_path.c_str(), protocol);
-    ROS_INFO("success: katana initialized");
+    RCLCPP_INFO(node_->get_logger(), "success: katana initialized");
   }
   catch (Exception &e)
   {
-    ROS_ERROR("Exception during initialization: '%s'", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "Exception during initialization: '%s'", e.message().c_str());
     return;
   }
 
@@ -118,16 +115,16 @@ Katana::Katana() :
 
   /* ********* calibrate ********* */
   calibrate();
-  ROS_INFO("success: katana calibrated");
+  RCLCPP_INFO(node_->get_logger(), "success: katana calibrated");
 
   refreshEncoders();
 
   // boost::thread worker_thread(&Katana::test_speed, this);
 
   /* ********* services ********* */
-  switch_motors_off_srv_ = nh.advertiseService("switch_motors_off", &Katana::switchMotorsOff, this);
-  switch_motors_on_srv_ = nh.advertiseService("switch_motors_on", &Katana::switchMotorsOn, this);
-  test_speed_srv_  = nh.advertiseService("test_speed", &Katana::testSpeedSrv, this);
+  switch_motors_off_srv_ = node->create_service<std_srvs::srv::Empty>("switch_motors_off", std::bind(&Katana::switchMotorsOff, this, std::placeholders::_1, std::placeholders::_2));
+  switch_motors_on_srv_ = node->create_service<std_srvs::srv::Empty>("switch_motors_on", std::bind(&Katana::switchMotorsOn, this, std::placeholders::_1, std::placeholders::_2));
+  test_speed_srv_  = node->create_service<std_srvs::srv::Empty>("test_speed", std::bind(&Katana::testSpeedSrv, this, std::placeholders::_1, std::placeholders::_2));
 }
 
 Katana::~Katana()
@@ -171,9 +168,9 @@ void Katana::refreshEncoders()
       const TMotPVP* pvp = motors[i].GetPVP();
 
       double current_angle = converter->angle_enc2rad(i, pvp->pos);
-      double time_since_update = (ros::Time::now() - last_encoder_update_).toSec();
+      double time_since_update = (node_->now() - last_encoder_update_).seconds();
 
-      if (last_encoder_update_ == ros::Time(0.0) || time_since_update == 0.0)
+      if (last_encoder_update_ == rclcpp::Time(0, 0, node_->get_clock()->get_clock_type()) || time_since_update == 0.0)
       {
         motor_velocities_[i] = 0.0;
       }
@@ -194,34 +191,34 @@ void Katana::refreshEncoders()
     //  motor_velocities_[2] *= 0.5;
     //  motor_velocities_[4] *= -1.0;
 
-    last_encoder_update_ = ros::Time::now();
+    last_encoder_update_ = node_->now();
   }
   catch (const WrongCRCException &e)
   {
-    ROS_ERROR("WrongCRCException: Two threads tried to access the KNI at once. This means that the locking in the Katana node is broken. (exception in refreshEncoders(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "WrongCRCException: Two threads tried to access the KNI at once. This means that the locking in the Katana node is broken. (exception in refreshEncoders(): %s)", e.message().c_str());
   }
   catch (const ReadNotCompleteException &e)
   {
-    ROS_ERROR("ReadNotCompleteException: Another program accessed the KNI. Please stop it and restart the Katana node. (exception in refreshEncoders(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "ReadNotCompleteException: Another program accessed the KNI. Please stop it and restart the Katana node. (exception in refreshEncoders(): %s)", e.message().c_str());
   }
   catch (const ParameterReadingException &e)
   {
-    ROS_ERROR("ParameterReadingException: Could not receive PVP (Position Velocity PWM) parameters from a motor (exception in refreshEncoders(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "ParameterReadingException: Could not receive PVP (Position Velocity PWM) parameters from a motor (exception in refreshEncoders(): %s)", e.message().c_str());
   }
   catch (const FirmwareException &e)
   {
     // This can happen when the arm collides with something (red LED).
     // The message returned by the Katana in this case is:
     // FirmwareException : 'move buffer error (axis 1)'
-    ROS_ERROR("FirmwareException: Did the arm collide with something (red LED)? (exception in refreshEncoders(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "FirmwareException: Did the arm collide with something (red LED)? (exception in refreshEncoders(): %s)", e.message().c_str());
   }
   catch (const Exception &e)
   {
-    ROS_ERROR("Unhandled exception in refreshEncoders(): %s", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in refreshEncoders(): %s", e.message().c_str());
   }
   catch (...)
   {
-    ROS_ERROR("Unhandled exception in refreshEncoders()");
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in refreshEncoders()");
   }
 }
 
@@ -262,19 +259,19 @@ void Katana::refreshMotorStatus()
   }
   catch (const WrongCRCException &e)
   {
-    ROS_ERROR("WrongCRCException: Two threads tried to access the KNI at once. This means that the locking in the Katana node is broken. (exception in refreshMotorStatus(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "WrongCRCException: Two threads tried to access the KNI at once. This means that the locking in the Katana node is broken. (exception in refreshMotorStatus(): %s)", e.message().c_str());
   }
   catch (const ReadNotCompleteException &e)
   {
-    ROS_ERROR("ReadNotCompleteException: Another program accessed the KNI. Please stop it and restart the Katana node. (exception in refreshMotorStatus(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "ReadNotCompleteException: Another program accessed the KNI. Please stop it and restart the Katana node. (exception in refreshMotorStatus(): %s)", e.message().c_str());
   }
   catch (const Exception &e)
   {
-    ROS_ERROR("Unhandled exception in refreshMotorStatus(): %s", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in refreshMotorStatus(): %s", e.message().c_str());
   }
   catch (...)
   {
-    ROS_ERROR("Unhandled exception in refreshMotorStatus()");
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in refreshMotorStatus()");
   }
 }
 
@@ -283,18 +280,18 @@ void Katana::refreshMotorStatus()
  *
  * @param traj
  */
-bool Katana::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj, boost::function<bool ()> isPreemptRequested)
+bool Katana::executeTrajectory(std::shared_ptr<SpecifiedTrajectory> traj, std::function<bool ()> isPreemptRequested)
 {
   assert(traj->size() > 0);
 
   try
   {
     // ------- wait until all motors idle
-    ros::Rate idleWait(10);
+    rclcpp::Rate idleWait(10);
     while (!allMotorsReady())
     {
       refreshMotorStatus();
-      ROS_DEBUG("Motor status: %d, %d, %d, %d, %d, %d", motor_status_[0], motor_status_[1], motor_status_[2], motor_status_[3], motor_status_[4], motor_status_[5]);
+      RCLCPP_DEBUG(node_->get_logger(), "Motor status: %d, %d, %d, %d, %d, %d", motor_status_[0], motor_status_[1], motor_status_[2], motor_status_[3], motor_status_[4], motor_status_[5]);
 
       // ------- check if motors are blocked
       // it is important to do this inside the allMotorsReady() loop, otherwise we
@@ -302,7 +299,7 @@ bool Katana::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj, boos
       // become ready
       if (someMotorCrashed())
       {
-        ROS_WARN("Motors are crashed before executing trajectory! Unblocking...");
+        RCLCPP_WARN(node_->get_logger(), "Motors are crashed before executing trajectory! Unblocking...");
 
         boost::recursive_mutex::scoped_lock lock(kni_mutex);
         kni->unBlock();
@@ -323,26 +320,26 @@ bool Katana::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj, boos
     //  }
     //
     //  std::vector<int> current_encoders = kni->getRobotEncoders(true);
-    //  ROS_INFO("current encoders: %d %d %d %d %d", current_encoders[0], current_encoders[1], current_encoders[2], current_encoders[3], current_encoders[4]);
-    //  ROS_INFO("target encoders:  %d %d %d %d %d", encoders[0], encoders[1], encoders[2], encoders[3], encoders[4]);
+    //  RCLCPP_INFO(node_->get_logger(), "current encoders: %d %d %d %d %d", current_encoders[0], current_encoders[1], current_encoders[2], current_encoders[3], current_encoders[4]);
+    //  RCLCPP_INFO(node_->get_logger(), "target encoders:  %d %d %d %d %d", encoders[0], encoders[1], encoders[2], encoders[3], encoders[4]);
     //
     //  kni->moveRobotToEnc(encoders, false);
     //  ros::Duration(2.0).sleep();
     //}
 
     // ------- wait until start time
-    ros::Time start_time = ros::Time(traj->at(0).start_time);
-    double time_until_start = (start_time - ros::Time::now()).toSec();
+    rclcpp::Time start_time = rclcpp::Time(traj->at(0).start_time * 1e9);
+    double time_until_start = (start_time - node_->now()).seconds();
 
     if (fabs(traj->at(0).start_time) > 0.01 && time_until_start < -0.01)
     {
       // only print warning if traj->at(0).start_time != 0 (MoveIt usually doesn't set start time)
-      ROS_WARN("Trajectory started %f s too late! Scheduled: %f, started: %f", -time_until_start, start_time.toSec(), ros::Time::now().toSec());
+      RCLCPP_WARN(node_->get_logger(), "Trajectory started %f s too late! Scheduled: %f, started: %f", -time_until_start, start_time.seconds(), node_->now().seconds());
     }
     else if (time_until_start > 0.0)
     {
-      ROS_DEBUG("Sleeping %f seconds until scheduled start of trajectory", time_until_start);
-      ros::Time::sleepUntil(start_time);
+      RCLCPP_DEBUG(node_->get_logger(), "Sleeping %f seconds until scheduled start of trajectory", time_until_start);
+      rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(time_until_start)));
     }
 
     // ------- start trajectory
@@ -351,7 +348,7 @@ bool Katana::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj, boos
     // fix start times: set the trajectory start time to now(); since traj is a shared pointer,
     // this fixes the current_trajectory_ in joint_trajectory_action_controller, which synchronizes
     // the "state" publishing to the actual start time (more or less)
-    double delay = ros::Time::now().toSec() - traj->at(0).start_time;
+    double delay = node_->now().seconds() - traj->at(0).start_time;
     for (size_t i = 0; i < traj->size(); i++)
     {
       traj->at(i).start_time += delay;
@@ -362,7 +359,7 @@ bool Katana::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj, boos
       Segment seg = traj->at(i);
       if (seg.splines.size() != joint_names_.size())
       {
-        ROS_ERROR("Wrong number of joints in specified trajectory (was: %zu, expected: %zu)!", seg.splines.size(), joint_names_.size());
+        RCLCPP_ERROR(node_->get_logger(), "Wrong number of joints in specified trajectory (was: %zu, expected: %zu)!", seg.splines.size(), joint_names_.size());
       }
 
       // set and start movement
@@ -413,11 +410,11 @@ bool Katana::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj, boos
       polynomial.push_back(0); // p2
       polynomial.push_back(0); // p3
 
-      ROS_DEBUG("setAndStartPolyMovement(%d): ", activityflag);
+      RCLCPP_DEBUG(node_->get_logger(), "setAndStartPolyMovement(%d): ", activityflag);
 
       for (size_t k = 5; k < polynomial.size(); k += 6)
       {
-        ROS_DEBUG("   time: %d   target: %d   p0: %d   p1: %d   p2: %d   p3: %d",
+        RCLCPP_DEBUG(node_->get_logger(), "   time: %d   target: %d   p0: %d   p1: %d   p2: %d   p3: %d",
             polynomial[k-5], polynomial[k-4], polynomial[k-3], polynomial[k-2], polynomial[k-1], polynomial[k]);
       }
 
@@ -427,26 +424,26 @@ bool Katana::executeTrajectory(boost::shared_ptr<SpecifiedTrajectory> traj, boos
   }
   catch (const WrongCRCException &e)
   {
-    ROS_ERROR("WrongCRCException: Two threads tried to access the KNI at once. This means that the locking in the Katana node is broken. (exception in executeTrajectory(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "WrongCRCException: Two threads tried to access the KNI at once. This means that the locking in the Katana node is broken. (exception in executeTrajectory(): %s)", e.message().c_str());
   }
   catch (const ReadNotCompleteException &e)
   {
-    ROS_ERROR("ReadNotCompleteException: Another program accessed the KNI. Please stop it and restart the Katana node. (exception in executeTrajectory(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "ReadNotCompleteException: Another program accessed the KNI. Please stop it and restart the Katana node. (exception in executeTrajectory(): %s)", e.message().c_str());
   }
   catch (const FirmwareException &e)
   {
     // TODO: find out what the real cause of this is when it happens again
     // the message returned by the Katana is:
     // FirmwareException : 'StopperThread: collision on axis: 1 (axis N)'
-    ROS_ERROR("FirmwareException: Motor collision? Perhaps we tried to send a trajectory that the arm couldn't follow. (exception in executeTrajectory(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "FirmwareException: Motor collision? Perhaps we tried to send a trajectory that the arm couldn't follow. (exception in executeTrajectory(): %s)", e.message().c_str());
   }
   catch (const Exception &e)
   {
-    ROS_ERROR("Unhandled exception in executeTrajectory(): %s", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in executeTrajectory(): %s", e.message().c_str());
   }
   catch (...)
   {
-    ROS_ERROR("Unhandled exception in executeTrajectory()");
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in executeTrajectory()");
   }
   return false;
 }
@@ -462,7 +459,7 @@ bool Katana::moveJoint(int motorIndex, double desiredAngle)
 {
   if (desiredAngle < motor_limits_[motorIndex].min_position || motor_limits_[motorIndex].max_position < desiredAngle)
   {
-    ROS_ERROR("Desired angle %f is out of range [%f, %f]", desiredAngle, motor_limits_[motorIndex].min_position, motor_limits_[motorIndex].max_position);
+    RCLCPP_ERROR(node_->get_logger(), "Desired angle %f is out of range [%f, %f]", desiredAngle, motor_limits_[motorIndex].min_position, motor_limits_[motorIndex].max_position);
     return false;
   }
 
@@ -474,19 +471,19 @@ bool Katana::moveJoint(int motorIndex, double desiredAngle)
   }
   catch (const WrongCRCException &e)
   {
-    ROS_ERROR("WrongCRCException: Two threads tried to access the KNI at once. This means that the locking in the Katana node is broken. (exception in moveJoint(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "WrongCRCException: Two threads tried to access the KNI at once. This means that the locking in the Katana node is broken. (exception in moveJoint(): %s)", e.message().c_str());
   }
   catch (const ReadNotCompleteException &e)
   {
-    ROS_ERROR("ReadNotCompleteException: Another program accessed the KNI. Please stop it and restart the Katana node. (exception in moveJoint(): %s)", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "ReadNotCompleteException: Another program accessed the KNI. Please stop it and restart the Katana node. (exception in moveJoint(): %s)", e.message().c_str());
   }
   catch (const Exception &e)
   {
-    ROS_ERROR("Unhandled exception in moveJoint(): %s", e.message().c_str());
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in moveJoint(): %s", e.message().c_str());
   }
   catch (...)
   {
-    ROS_ERROR("Unhandled exception in moveJoint()");
+    RCLCPP_ERROR(node_->get_logger(), "Unhandled exception in moveJoint()");
   }
   return false;
 }
@@ -552,19 +549,19 @@ void Katana::calibrate()
   try
   {
     kni->moveMotorByEnc(1, encoders);
-    ROS_INFO("no calibration required");
+    RCLCPP_INFO(node_->get_logger(), "no calibration required");
   }
   catch (...)
   {
-    ROS_INFO("first calibration collision... ");
+    RCLCPP_INFO(node_->get_logger(), "first calibration collision... ");
     try
     {
       kni->moveMotorByEnc(1, -encoders);
-      ROS_INFO("no calibration required");
+      RCLCPP_INFO(node_->get_logger(), "no calibration required");
     }
     catch (...)
     {
-      ROS_INFO("second calibration collision: calibration required");
+      RCLCPP_INFO(node_->get_logger(), "second calibration collision: calibration required");
       calibrate = true;
     }
   }
@@ -581,23 +578,23 @@ void Katana::calibrate()
  * This service is dangerous to call! It will switch all motors off. If the arm is not in a
  * stable position, it will crash down, potentially damaging itself or the environment!
  */
-bool Katana::switchMotorsOff(std_srvs::Empty::Request &request, std_srvs::Empty::Response &response)
+bool Katana::switchMotorsOff(const std_srvs::srv::Empty::Request::SharedPtr request, std_srvs::srv::Empty::Response::SharedPtr response)
 {
-  ROS_WARN("Switching all motors off!");
+  RCLCPP_WARN(node_->get_logger(), "Switching all motors off!");
   boost::recursive_mutex::scoped_lock lock(kni_mutex);
   kni->switchRobotOff();
   return true;
 }
 
-bool Katana::switchMotorsOn(std_srvs::Empty::Request &request, std_srvs::Empty::Response &response)
+bool Katana::switchMotorsOn(const std_srvs::srv::Empty::Request::SharedPtr request, std_srvs::srv::Empty::Response::SharedPtr response)
 {
-  ROS_INFO("Switching all motors back on.");
+  RCLCPP_INFO(node_->get_logger(), "Switching all motors back on.");
   boost::recursive_mutex::scoped_lock lock(kni_mutex);
   kni->switchRobotOn();
   return true;
 }
 
-bool Katana::testSpeedSrv(std_srvs::Empty::Request &request, std_srvs::Empty::Response &response)
+bool Katana::testSpeedSrv(const std_srvs::srv::Empty::Request::SharedPtr request, std_srvs::srv::Empty::Response::SharedPtr response)
 {
   testSpeed();
   return true;
@@ -605,7 +602,7 @@ bool Katana::testSpeedSrv(std_srvs::Empty::Request &request, std_srvs::Empty::Re
 
 void Katana::testSpeed()
 {
-  ros::Rate idleWait(5);
+
   std::vector<double> pos1_angles(NUM_MOTORS);
   std::vector<double> pos2_angles(NUM_MOTORS);
 
@@ -636,12 +633,12 @@ void Katana::testSpeed()
     int accel = kni->getMotorAccelerationLimit(i);
     int max_vel = kni->getMotorVelocityLimit(i);
 
-    ROS_INFO("Motor %zu - acceleration: %d (= %f), max speed: %d (=%f)", i, accel, 2.0 * converter->acc_enc2rad(i, accel), max_vel, converter->vel_enc2rad(i, max_vel));
-    ROS_INFO("KNI encoders: %d, %d", kni->GetBase()->GetMOT()->arr[i].GetEncoderMinPos(), kni->GetBase()->GetMOT()->arr[i].GetEncoderMaxPos());
-    ROS_INFO("moving to encoders: %d, %d", pos1_encoders, pos2_encoders);
-    ROS_INFO("current encoders: %d", kni->getMotorEncoders(i, true));
+    RCLCPP_INFO(node_->get_logger(), "Motor %zu - acceleration: %d (= %f), max speed: %d (=%f)", i, accel, 2.0 * converter->acc_enc2rad(i, accel), max_vel, converter->vel_enc2rad(i, max_vel));
+    RCLCPP_INFO(node_->get_logger(), "KNI encoders: %d, %d", kni->GetBase()->GetMOT()->arr[i].GetEncoderMinPos(), kni->GetBase()->GetMOT()->arr[i].GetEncoderMaxPos());
+    RCLCPP_INFO(node_->get_logger(), "moving to encoders: %d, %d", pos1_encoders, pos2_encoders);
+    RCLCPP_INFO(node_->get_logger(), "current encoders: %d", kni->getMotorEncoders(i, true));
 
-    ROS_INFO("Moving to min");
+    RCLCPP_INFO(node_->get_logger(), "Moving to min");
     {
       boost::recursive_mutex::scoped_lock lock(kni_mutex);
       kni->moveMotorToEnc(i, pos1_encoders);
@@ -649,11 +646,12 @@ void Katana::testSpeed()
 
     do
     {
-      idleWait.sleep();
+      //? why 200ms?
+      rclcpp::sleep_for(std::chrono::milliseconds(200));
       refreshMotorStatus();
     } while (!allMotorsReady());
 
-    ROS_INFO("Moving to max");
+    RCLCPP_INFO(node_->get_logger(), "Moving to max");
     {
       boost::recursive_mutex::scoped_lock lock(kni_mutex);
       kni->moveMotorToEnc(i, pos2_encoders);
@@ -661,7 +659,8 @@ void Katana::testSpeed()
 
     do
     {
-      idleWait.sleep();
+      //? why 200ms?
+      rclcpp::sleep_for(std::chrono::milliseconds(200));
       refreshMotorStatus();
     } while (!allMotorsReady());
   }

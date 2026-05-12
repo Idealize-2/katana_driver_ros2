@@ -32,7 +32,7 @@ KNIConverter::KNIConverter(std::string config_file_path)
   bool success = config_.openFile(config_file_path.c_str());
 
   if (!success)
-    ROS_ERROR("Could not open config file: %s", config_file_path.c_str());
+    RCLCPP_ERROR(rclcpp::get_logger("KNIConverter"), "Could not open config file: %s", config_file_path.c_str());
 }
 
 KNIConverter::~KNIConverter()
