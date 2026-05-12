@@ -1,4 +1,4 @@
 #goal definition
-sensor_msgs/JointState jointGoal
+sensor_msgs/JointState joint_goal
 ---
 ---

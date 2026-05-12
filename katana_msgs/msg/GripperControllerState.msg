@@ -11,7 +11,7 @@
 # All arrays in this message should have the same size.
 # This is the only way to uniquely associate the joint name with the correct
 # states.
-Header header
+std_msgs/Header header
 
 string[] name
 float64[] actual

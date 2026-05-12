@@ -1,32 +1,26 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.8)
 project(katana_msgs)
 
-find_package(catkin REQUIRED COMPONENTS
-  sensor_msgs
-  actionlib_msgs
-  message_generation
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(action_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+
+set(msg_files
+  "msg/GripperControllerState.msg"
+  "action/JointMovement.action"
 )
 
-add_message_files(
-  FILES
-  GripperControllerState.msg
+rosidl_generate_interfaces(${PROJECT_NAME}
+  ${msg_files}
+  DEPENDENCIES sensor_msgs action_msgs std_msgs
 )
 
-add_action_files(
-  FILES
-  JointMovement.action
-)
+ament_export_dependencies(rosidl_default_runtime)
 
-generate_messages(
-  DEPENDENCIES
-  sensor_msgs actionlib_msgs)
-
-catkin_package(
-  INCLUDE_DIRS
-  LIBRARIES
-  CATKIN_DEPENDS
-    message_runtime
-    sensor_msgs
-    actionlib_msgs
-  DEPENDS
-)
+ament_package()

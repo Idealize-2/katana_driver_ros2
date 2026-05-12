@@ -1,5 +1,6 @@
 <?xml version="1.0"?>
-<package>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
   <name>kni</name>
   <version>1.1.2</version>
   <description>
@@ -14,9 +15,11 @@
   <license>GPL</license>
   <url type="website">http://ros.org/wiki/kni</url>
 
-  <buildtool_depend>catkin</buildtool_depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <build_depend>boost</build_depend>
+  <depend>boost</depend>
 
-  <run_depend>boost</run_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
 </package>
