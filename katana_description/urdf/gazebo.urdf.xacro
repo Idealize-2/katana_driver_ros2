@@ -2,11 +2,14 @@
 
 <robot xmlns:xacro="http://ros.org/wiki/xacro">
 
-  <gazebo>
-    <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
-      <parameters>$(find katana_arm_gazebo)/config/katana_controllers.yaml</parameters>
-    </plugin>
-  </gazebo>
+  <xacro:arg name="use_gazebo" default="false"/>
+  <xacro:if value="${'$(arg use_gazebo)' == 'true'}">
+    <gazebo>
+      <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
+        <parameters>$(find katana_arm_gazebo)/config/katana_controllers.yaml</parameters>
+      </plugin>
+    </gazebo>
+  </xacro:if>
 
 
   <!-- NOTE: all gazebo extensions are listed here: simulator_gazebo/gazebo/src/urdf2gazebo.cpp -->

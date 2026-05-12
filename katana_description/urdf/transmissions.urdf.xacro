@@ -1,29 +1,32 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://ros.org/wiki/xacro">
 
-  <ros2_control name="KatanaHardware" type="system">
-    <hardware>
-      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
-    </hardware>
+  <xacro:arg name="use_gazebo" default="false"/>
+  <xacro:if value="${'$(arg use_gazebo)' == 'true'}">
+    <ros2_control name="KatanaHardware" type="system">
+      <hardware>
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </hardware>
 
-    <xacro:macro name="katana_joint_interface" params="name initial_pos">
-      <joint name="${name}">
-        <command_interface name="position"/>
-        <state_interface name="position">
-          <param name="initial_value">${initial_pos}</param>
-        </state_interface>
-        <state_interface name="velocity"/>
-      </joint>
-    </xacro:macro>
+      <xacro:macro name="katana_joint_interface" params="name initial_pos">
+        <joint name="${name}">
+          <command_interface name="position"/>
+          <state_interface name="position">
+            <param name="initial_value">${initial_pos}</param>
+          </state_interface>
+          <state_interface name="velocity"/>
+        </joint>
+      </xacro:macro>
 
-    <xacro:katana_joint_interface name="katana_motor1_pan_joint" initial_pos="-3.022" />
-    <xacro:katana_joint_interface name="katana_motor2_lift_joint" initial_pos="2.163" />
-    <xacro:katana_joint_interface name="katana_motor3_lift_joint" initial_pos="-2.207" />
-    <xacro:katana_joint_interface name="katana_motor4_lift_joint" initial_pos="-2.026" />
-    <xacro:katana_joint_interface name="katana_motor5_wrist_roll_joint" initial_pos="-2.990" />
-    <xacro:katana_joint_interface name="katana_r_finger_joint" initial_pos="0.3" />
-    <xacro:katana_joint_interface name="katana_l_finger_joint" initial_pos="0.3" />
+      <xacro:katana_joint_interface name="katana_motor1_pan_joint" initial_pos="-3.022" />
+      <xacro:katana_joint_interface name="katana_motor2_lift_joint" initial_pos="2.163" />
+      <xacro:katana_joint_interface name="katana_motor3_lift_joint" initial_pos="-2.207" />
+      <xacro:katana_joint_interface name="katana_motor4_lift_joint" initial_pos="-2.026" />
+      <xacro:katana_joint_interface name="katana_motor5_wrist_roll_joint" initial_pos="-2.990" />
+      <xacro:katana_joint_interface name="katana_r_finger_joint" initial_pos="0.3" />
+      <xacro:katana_joint_interface name="katana_l_finger_joint" initial_pos="0.3" />
 
-  </ros2_control>
+    </ros2_control>
+  </xacro:if>
 
 </robot>

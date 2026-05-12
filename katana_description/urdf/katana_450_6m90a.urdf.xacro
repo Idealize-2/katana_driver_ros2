@@ -3,8 +3,11 @@
 <robot xmlns:xacro="http://ros.org/wiki/xacro"
        name="katana_450_6m90a">
 
-  <xacro:include filename="$(find katana_description)/urdf/transmissions.urdf.xacro"/>
-  <xacro:include filename="$(find katana_description)/urdf/gazebo.urdf.xacro"/>
+  <xacro:arg name="use_gazebo" default="false"/>
+  <xacro:if value="${'$(arg use_gazebo)' == 'true'}">
+    <xacro:include filename="$(find katana_description)/urdf/transmissions.urdf.xacro"/>
+    <xacro:include filename="$(find katana_description)/urdf/gazebo.urdf.xacro"/>
+  </xacro:if>
 
   <xacro:property name="M_PI" value="3.1415926535897931" />
 

@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="katana_450_6m90a">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+
+    <!-- Import katana_450_6m90a urdf file -->
+    <xacro:include filename="$(find katana_description)/urdf/katana_450_6m90a.urdf.xacro" />
+
+    <!-- Import control_xacro -->
+    <xacro:include filename="katana_450_6m90a.ros2_control.xacro" />
+
+
+    <xacro:katana_450_6m90a_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)"/>
+
+</robot>

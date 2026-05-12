@@ -1,0 +1,10 @@
+# Default initial positions for katana_450_6m90a's ros2_control fake system
+
+initial_positions:
+  katana_l_finger_joint: 0
+  katana_motor1_pan_joint: 0
+  katana_motor2_lift_joint: 0
+  katana_motor3_lift_joint: 0
+  katana_motor4_lift_joint: 0
+  katana_motor5_wrist_roll_joint: 0
+  katana_r_finger_joint: 0

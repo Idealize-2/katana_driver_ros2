@@ -27,7 +27,7 @@ def generate_launch_description():
 
     # Xacro to URDF
     xacro_file = os.path.join(pkg_katana_description, 'urdf', 'katana_450_6m90a.urdf.xacro')
-    robot_description = {'robot_description': ParameterValue(Command(['xacro ', xacro_file]), value_type=str)}
+    robot_description = {'robot_description': ParameterValue(Command(['xacro ', xacro_file, ' use_gazebo:=true']), value_type=str)}
 
     # Robot State Publisher
     node_robot_state_publisher = Node(
