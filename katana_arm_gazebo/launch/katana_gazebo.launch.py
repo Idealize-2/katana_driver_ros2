@@ -1,15 +1,23 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, Command
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     pkg_katana_description = get_package_share_directory('katana_description')
     pkg_katana_arm_gazebo = get_package_share_directory('katana_arm_gazebo')
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
+
+    # Tell Ignition Gazebo where to find package:// meshes
+    # GZ_SIM_RESOURCE_PATH needs the *parent* of katana_description so it
+    # can resolve "katana_description/meshes/..."
+    gz_resource_path = os.path.dirname(pkg_katana_description)
+    existing = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
+    full_resource_path = gz_resource_path + (':' + existing if existing else '')
 
     # Arguments
     world = LaunchConfiguration('world')
@@ -19,7 +27,7 @@ def generate_launch_description():
 
     # Xacro to URDF
     xacro_file = os.path.join(pkg_katana_description, 'urdf', 'katana_450_6m90a.urdf.xacro')
-    robot_description = {'robot_description': Command(['xacro ', xacro_file])}
+    robot_description = {'robot_description': ParameterValue(Command(['xacro ', xacro_file]), value_type=str)}
 
     # Robot State Publisher
     node_robot_state_publisher = Node(
@@ -71,6 +79,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', full_resource_path),
         DeclareLaunchArgument('world', default_value='empty.sdf', description='Gazebo World'),
         node_robot_state_publisher,
         gz_sim,
