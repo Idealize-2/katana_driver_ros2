@@ -15,7 +15,10 @@
 #include "KNI/cplSerial.h"
 
 static volatile bool g_running = true;
-static void signalHandler(int) { g_running = false; }
+static void signalHandler(int) { 
+  std::cout << "\n[encoder_reader] Stopping...\n";
+  g_running = false; 
+}
 
 double encoderToDegrees(const TMotInit * init, int encoder)
 {
@@ -28,9 +31,6 @@ int main(int argc, char ** argv)
 {
   if (argc < 4) {
     std::cerr << "Usage: encoder_reader <tcp|serial> <IP_or_PortNum> <CONFIG_FILE>\n";
-    std::cerr << "Examples:\n";
-    std::cerr << "  encoder_reader tcp 192.168.1.1 /path/to/arm.cfg\n";
-    std::cerr << "  encoder_reader serial 0 /path/to/arm.cfg  (0 = /dev/ttyS0)\n";
     return 1;
   }
 
@@ -40,55 +40,69 @@ int main(int argc, char ** argv)
 
   std::signal(SIGINT, signalHandler);
 
+  // DECLARE THESE OUTSIDE THE TRY BLOCK so they don't get destroyed early!
+  std::unique_ptr<CCdlBase> device;
+  std::unique_ptr<CCplSerialCRC> protocol;
+  std::unique_ptr<CLMBase> katana;
+
   try {
-    std::unique_ptr<CCdlBase> device;
     if (type == "tcp") {
       device = std::make_unique<CCdlSocket>(const_cast<char*>(addr.c_str()), 5566);
-      std::cout << "Opened TCP socket to " << addr << "\n";
+      std::cout << "  [OK] TCP socket opened to " << addr << "\n";
     } else {
       TCdlCOMDesc ccd;
       ccd.port = std::stoi(addr);
       ccd.baud = 57600;
       ccd.data = 8; ccd.parity = 'N'; ccd.stop = 1; ccd.rttc = 100; ccd.wttc = 100;
       device = std::make_unique<CCdlCOM>(ccd);
-      std::cout << "Opened Serial port /dev/ttyS" << addr << "\n";
+      std::cout << "  [OK] Serial port /dev/ttyS" << addr << " opened\n";
     }
 
-    std::unique_ptr<CCplSerialCRC> protocol = std::make_unique<CCplSerialCRC>();
+    protocol = std::make_unique<CCplSerialCRC>();
     protocol->init(device.get());
+    std::cout << "  [OK] Protocol initialised.\n";
 
-    std::unique_ptr<CLMBase> katana = std::make_unique<CLMBase>();
+    katana = std::make_unique<CLMBase>();
     katana->create(config_file.c_str(), protocol.get());
-    std::cout << "Arm initialized.\n";
+    std::cout << "  [OK] Arm object created.\n";
+
+    // --- Calibration ---
+    std::cout << "\nCalibrate arm now? (y = yes / n = skip): ";
+    char choice = 'n';
+    std::cin >> choice;
+
+    if (choice == 'y' || choice == 'Y') {
+      std::cout << "Calibrating — keep the workspace clear!\n";
+      katana->calibrate();
+      std::cout << "  [OK] Calibration complete.\n";
+    }
 
     const TKatMOT * motors = katana->GetBase()->GetMOT();
     int n_motors = motors->cnt;
 
+    std::cout << "\nReading encoders. Press Ctrl+C to stop.\n";
     std::cout << std::string(80, '-') << "\n";
-    std::cout << std::setw(6) << "Cycle";
-    for (int i = 0; i < n_motors; ++i) {
-      std::cout << " | " << std::setw(10) << ("M" + std::to_string(i+1) + " enc")
-                << std::setw(8) << ("M" + std::to_string(i+1) + " deg");
-    }
-    std::cout << "\n" << std::string(80, '-') << "\n";
-
-    int cycle = 0;
+    
     while (g_running) {
       std::vector<int> encoders = katana->getRobotEncoders(true);
-      std::cout << std::setw(6) << ++cycle;
+      std::cout << "Data: ";
       for (int i = 0; i < n_motors && i < static_cast<int>(encoders.size()); ++i) {
         const TMotInit * init = motors->arr[i].GetInitialParameters();
         double deg = encoderToDegrees(init, encoders[i]);
-        std::cout << " | " << std::setw(10) << encoders[i]
-                  << std::setw(8) << std::fixed << std::setprecision(2) << deg;
+        std::cout << "M" << i+1 << ":" << std::setw(7) << encoders[i] << " (" << std::fixed << std::setprecision(1) << deg << "°)  ";
       }
-      std::cout << "\n";
+      std::cout << "\r" << std::flush;
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
+
   } catch (const Exception & e) {
-    std::cerr << "KNI Error: " << e.message() << "\n";
+    std::cerr << "\n[KNI ERROR] " << e.message() << "\n";
+    return 1;
+  } catch (const std::exception & e) {
+    std::cerr << "\n[ERROR] " << e.what() << "\n";
     return 1;
   }
 
+  std::cout << "\nGoodbye.\n";
   return 0;
 }

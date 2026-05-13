@@ -37,8 +37,11 @@ int main(int argc, char ** argv)
 
   std::signal(SIGINT, signalHandler);
 
+  std::unique_ptr<CCdlBase> device;
+  std::unique_ptr<CCplSerialCRC> protocol;
+  std::unique_ptr<CLMBase> katana;
+
   try {
-    std::unique_ptr<CCdlBase> device;
     if (type == "tcp") {
       device = std::make_unique<CCdlSocket>(const_cast<char*>(addr.c_str()), 5566);
     } else {
@@ -49,15 +52,15 @@ int main(int argc, char ** argv)
       device = std::make_unique<CCdlCOM>(ccd);
     }
 
-    std::unique_ptr<CCplSerialCRC> protocol = std::make_unique<CCplSerialCRC>();
+    protocol = std::make_unique<CCplSerialCRC>();
     protocol->init(device.get());
 
-    std::unique_ptr<CLMBase> katana = std::make_unique<CLMBase>();
+    katana = std::make_unique<CLMBase>();
     katana->create(config_file.c_str(), protocol.get());
     
-    std::cout << "Disabling motors...\n";
+    std::cout << "Disabling motors (making arm limp)...\n";
     katana->switchRobotOff();
-    std::cout << "Motors DISABLED. Arm is limp. Press Ctrl+C to stop monitoring.\n";
+    std::cout << "Motors DISABLED. Press Ctrl+C to stop.\n";
 
     const TKatMOT * motors = katana->GetBase()->GetMOT();
     int n_motors = motors->cnt;
