@@ -1,0 +1,12 @@
+<library path="katana_hardware_interface">
+  <class
+    name="katana_driver/KatanaHardwareInterface"
+    type="katana_driver::KatanaHardwareInterface"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>
+      ros2_control hardware interface plugin for the Neuronics Katana 450 6M robot arm.
+      Uses the KNI SDK (CLMBase) to communicate with the arm over TCP (port 5566).
+      Reads joint encoders and writes position commands via the KNI serial-CRC protocol.
+    </description>
+  </class>
+</library>

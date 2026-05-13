@@ -1,26 +1,30 @@
-<package>
-  <name> katana_driver </name>
-  <version>1.1.2</version>
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+            schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>katana_driver</name>
+  <version>2.0.0</version>
   <description>
-    This stack contains all descriptions, drivers and bringup facilities for Neuronics Katana 450 arm.
+    ROS 2 hardware interface plugin for the Neuronics Katana 450 robot arm.
+    Bridges the KNI SDK (kni package) with ros2_control / MoveIt 2.
   </description>
 
-  <maintainer email="mguenthe@uni-osnabrueck.de">Martin Günther</maintainer>
-  <license>BSD, GPL</license>
-  <url>http://ros.org/wiki/katana_driver</url>
+  <maintainer email="tanatoy78@gmail.com">kayz</maintainer>
+  <license>BSD-3-Clause</license>
 
-  <run_depend>katana</run_depend>
-  <run_depend>katana_arm_gazebo</run_depend>
-  <run_depend>katana_description</run_depend>
-  <run_depend>katana_gazebo_plugins</run_depend>
-  <run_depend>katana_moveit_ikfast_plugin</run_depend>
-  <run_depend>katana_msgs</run_depend>
-  <run_depend>katana_teleop</run_depend>
-  <run_depend>katana_tutorials</run_depend>
-  <run_depend>kni</run_depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <buildtool_depend>catkin</buildtool_depend>
+  <!-- Build dependencies -->
+  <depend>ament_index_cpp</depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>kni</depend>
+
   <export>
-    <metapackage/>
+    <build_type>ament_cmake</build_type>
+    <!-- Register the pluginlib plugin -->
+    <hardware_interface plugin="${prefix}/katana_hardware.xml"/>
   </export>
 </package>

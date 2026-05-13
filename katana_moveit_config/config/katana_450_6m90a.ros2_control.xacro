@@ -5,8 +5,25 @@
 
         <ros2_control name="${name}" type="system">
             <hardware>
-                <!-- By default, set up controllers for simulation. This won't work on real hardware -->
-                <plugin>mock_components/GenericSystem</plugin>
+                <!-- <plugin>mock_components/GenericSystem</plugin>-->
+                
+                <!-- Real hardware plugin — connects to the Katana arm over TCP -->
+                <plugin>katana_driver/KatanaHardwareInterface</plugin>
+
+                <!-- ── Connection parameters ───────────────────────────────────
+                     ip_address   : IP of the Katana controller (set on the arm's
+                                    onboard PC or USB-Ethernet adapter).
+                     config_file  : Absolute path to the .cfg file that matches your
+                                    arm variant (katana6M180_F.cfg or _G.cfg etc.).
+                                    The files live in:
+                                    install/kni/share/kni/KNI_4.3.0/configfiles450/
+                     calibrate_on_startup : set to "false" if the arm is already
+                                           homed and you don't want it to recalibrate.
+                ──────────────────────────────────────────────────────────────── -->
+                <param name="ip_address">192.168.1.1</param>
+                <param name="tcp_port">5566</param>
+                <param name="config_file">$(find kni)/share/kni/KNI_4.3.0/configfiles450/katana6M180_F.cfg</param>
+                <param name="calibrate_on_startup">true</param>
             </hardware>
             <joint name="katana_motor1_pan_joint">
                 <command_interface name="position"/>

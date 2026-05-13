@@ -1,7 +1,7 @@
 # This config file is used by ros2_control (demo / FakeSystem mode)
 controller_manager:
   ros__parameters:
-    update_rate: 100  # Hz
+    update_rate: 25  # Hz — throttled for Katana KNI serial protocol
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
