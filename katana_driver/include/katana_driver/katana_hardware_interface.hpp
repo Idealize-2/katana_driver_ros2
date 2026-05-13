@@ -3,8 +3,6 @@
 //
 // katana_hardware_interface.hpp
 // ros2_control hardware interface plugin for the Neuronics Katana 450 arm.
-// This class bridges between the KNI SDK (CKatana / CLMBase) and the
-// ros2_control SystemInterface so that MoveIt 2 can drive the physical arm.
 
 #pragma once
 
@@ -21,7 +19,10 @@
 #include "rclcpp_lifecycle/state.hpp"
 
 // KNI SDK
-#include "kniBase.h"   // pulls in CLMBase, CCdlSocket, CCplSerialCRC, etc.
+#include "kniBase.h"       // CLMBase
+#include "KNI/cdlSocket.h" // CCdlSocket
+#include "KNI/cdlCOM.h"    // CCdlCOM (Serial)
+#include "KNI/cplSerial.h" // CCplSerialCRC
 
 namespace katana_driver
 {
@@ -29,87 +30,57 @@ namespace katana_driver
 class KatanaHardwareInterface : public hardware_interface::SystemInterface
 {
 public:
-  // -------------------------------------------------------------------------
-  // Lifecycle hooks (called by controller_manager)
-  // -------------------------------------------------------------------------
+  RCLCPP_SHARED_PTR_DEFINITIONS(KatanaHardwareInterface)
 
-  /// Parse URDF hardware params; allocate state/command vectors.
-  hardware_interface::CallbackReturn on_init(
-    const hardware_interface::HardwareInfo & info) override;
+  hardware_interface::CallbackReturn on_init(const hardware_interface::HardwareInfo & info) override;
 
-  /// Export state interfaces (position, velocity) for each joint.
   std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
-
-  /// Export command interfaces (position) for each joint.
   std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
 
-  /// Open TCP socket → init protocol → load config → calibrate arm.
-  hardware_interface::CallbackReturn on_activate(
-    const rclcpp_lifecycle::State & previous_state) override;
+  hardware_interface::CallbackReturn on_activate(const rclcpp_lifecycle::State & previous_state) override;
+  hardware_interface::CallbackReturn on_deactivate(const rclcpp_lifecycle::State & previous_state) override;
 
-  /// Freeze motors and close the connection.
-  hardware_interface::CallbackReturn on_deactivate(
-    const rclcpp_lifecycle::State & previous_state) override;
-
-  /// Read encoder values from arm → convert to radians → fill hw_states_.
-  hardware_interface::return_type read(
-    const rclcpp::Time & time,
-    const rclcpp::Duration & period) override;
-
-  /// Take command radians → convert to encoder ticks → send to arm.
-  hardware_interface::return_type write(
-    const rclcpp::Time & time,
-    const rclcpp::Duration & period) override;
+  hardware_interface::return_type read(const rclcpp::Time & time, const rclcpp::Duration & period) override;
+  hardware_interface::return_type write(const rclcpp::Time & time, const rclcpp::Duration & period) override;
 
 private:
-  // -------------------------------------------------------------------------
-  // Conversion helpers
-  // -------------------------------------------------------------------------
+  // ── Parameters ────────────────────────────────────────────────────────────
+  std::string connection_type_;     // "tcp" or "serial"
+  
+  // TCP Params
+  std::string ip_address_;
+  int         tcp_port_;
+  
+  // Serial Params
+  int         serial_port_number_; // 0 for /dev/ttyS0, 1 for /dev/ttyS1, etc.
+  int         serial_baud_;
+  
+  std::string config_file_;
+  bool        calibrate_on_startup_;
 
-  /// Convert encoder ticks to radians for joint [idx].
-  double encoderToRad(int joint_idx, int encoder) const;
+  // ── KNI Objects ───────────────────────────────────────────────────────────
+  // We use CCdlBase as the abstract device to support both Socket and COM
+  std::unique_ptr<CCdlBase>       device_;
+  std::unique_ptr<CCplSerialCRC>  protocol_;
+  std::unique_ptr<CLMBase>        katana_;
 
-  /// Convert radians to encoder ticks for joint [idx].
-  int radToEncoder(int joint_idx, double rad) const;
-
-  // -------------------------------------------------------------------------
-  // KNI objects
-  // -------------------------------------------------------------------------
-  std::unique_ptr<CCdlSocket>      device_;
-  std::unique_ptr<CCplSerialCRC>   protocol_;
-  std::unique_ptr<CLMBase>         katana_;
-
-  // -------------------------------------------------------------------------
-  // Config loaded from URDF <param> tags
-  // -------------------------------------------------------------------------
-  std::string ip_address_;      // e.g. "192.168.1.1"
-  int         tcp_port_{5566};  // Katana always listens on 5566
-  std::string config_file_;     // path to katana6M180_F.cfg (or similar)
-  bool        calibrate_on_startup_{true};
-
-  // -------------------------------------------------------------------------
-  // Number of joints managed by this interface
-  // -------------------------------------------------------------------------
-  static constexpr std::size_t NUM_JOINTS = 7;   // 5 arm + 2 finger
-
-  // -------------------------------------------------------------------------
-  // State / command double arrays exposed to ros2_control
-  // -------------------------------------------------------------------------
+  // ── Hardware State/Commands ───────────────────────────────────────────────
   std::vector<double> hw_states_positions_;
   std::vector<double> hw_states_velocities_;
   std::vector<double> hw_commands_positions_;
 
-  // -------------------------------------------------------------------------
-  // Per-joint encoder calibration data (populated after katana_->create())
-  // -------------------------------------------------------------------------
+  // ── Internal Helpers ──────────────────────────────────────────────────────
   struct JointEncoderInfo {
-    int    enc_per_cycle;   // encoder ticks per 360°
-    double angle_offset;    // radians (loaded from .cfg)
-    int    direction;       // +1 or -1 (rotation direction)
+    int    enc_per_cycle;
+    double angle_offset;
+    int    direction;
     int    enc_min;
     int    enc_max;
   };
   std::vector<JointEncoderInfo> joint_info_;
+
+  double encoderToRad(int joint_idx, int encoder) const;
+  int    radToEncoder(int joint_idx, double rad) const;
 
   rclcpp::Logger logger_{rclcpp::get_logger("KatanaHardwareInterface")};
 };

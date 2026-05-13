@@ -1,223 +1,131 @@
-/*
- * follow_joint_trajectory_client.cpp
- *
- *  Created on: 06.11.2011
- *      Author: martin
- */
+// =============================================================================
+// Tutorial 3: offset_inverse_kinematics.cpp
+// =============================================================================
+// ROS 2 port — Full 3D IK with DH-parameter link offsets
+//
+// WHAT IT DOES:
+//   Most complete IK version. Handles the real geometry of the Katana arm
+//   including a link offset (d) between joint 1 and the shoulder joint.
+//
+// IK MODEL (DH-parameter based):
+//   a2 = 35 cm, a3 = 25 cm, d1 = 0 (no offset for this arm variant)
+//
+//   θ1 = atan2(y,x) + atan2(-sqrt(x²+y²-d²), d)
+//   θ3 = atan2(-sqrt(1-D²), D)       where D = (x²+y²+z²-d²-a2²-a3²)/(2·a2·a3)
+//   θ2 = atan2(z, sqrt(x²+y²-d²)) - atan2(a3·sin(θ3), a2+a3·cos(θ3))
+//
+// RUN:
+//   ros2 run katana_tutorials offset_inverse_kinematics
+//   Then type: X Y Z  (e.g.  20 10 15)
+// =============================================================================
 
-#include <katana_tutorials/follow_joint_trajectory_client.h>
-#include<iostream>
-#include<cmath>
+#include <cmath>
+#include <iostream>
+#include "rclcpp/rclcpp.hpp"
+#include "katana_tutorials/katana_arm_client.hpp"
 
+// ---------------------------------------------------------------------------
+// IK math (same as the original offset_inverse_kinematics.cpp)
+// ---------------------------------------------------------------------------
 
-double Theta_3(double a2,double a3,double x,double y,double z,double d){
-//        double theta = 0;
-//        theta = std::acos((pow(a2,2) + std::pow(a3,2) - std::pow(x,2) - std::pow(z,2))/(2*a2*a3));
-//        return theta;
-        double theta = 0,D = 0;
-        D = (std::pow(x,2) + std::pow(y,2) + std::pow(z,2) - std::pow(d,2) - std::pow(a2,2) - std::pow(a3,2))/(2*a2*a3);
-        theta = std::atan2(-std::sqrt(1 - std::pow(D,2)),D);// need to be config
-        return theta;
-
-}
-
-double Theta_2(double a2,double a3,double x,double y,double z,double d,double theta3){
-//        double theta = 0 ;
-//      
-//        theta = std::acos((std::pow(a2,2) - std::pow(a3,2) + std::pow(x,2) + std::pow(z,2))/(2*a2*std::sqrt(pow(x,2) + std::pow(z,2))));
-//        return theta;
-        double theta = 0,s3 = 0,c3 = 0;
-        s3 = std::sin(theta3);
-        c3 = std::cos(theta3);
-        theta = std::atan2(z,std::sqrt(std::pow(x,2) + std::pow(y,2) - std::pow(d,2))) - std::atan2(a3*s3,a2 + (a3*c3));
-        return theta;
-
-}
-
-
-double Theta_1(double x,double y,double d){
-        double theta = 0;
-	if(d != 0){
-            theta = std::atan2(y,x) + atan2(-(std::sqrt(std::pow(x,2) + std::pow(y,2) - std::pow(d,2))),d);
-	}else{
-	    theta = std::atan2(y,x);
-	}
-        return theta;
-}
-
-
-namespace katana_tutorials
+/// Elbow angle using proper atan2 formulation (correct quadrant)
+double Theta_3(double a2, double a3, double x, double y, double z, double d)
 {
+  double D = (x*x + y*y + z*z - d*d - a2*a2 - a3*a3) / (2.0 * a2 * a3);
+  D = std::max(-1.0, std::min(1.0, D));
+  return std::atan2(-std::sqrt(std::max(0.0, 1.0 - D*D)), D);
+}
 
-FollowJointTrajectoryClient::FollowJointTrajectoryClient() :
-    traj_client_("/katana_arm_controller/follow_joint_trajectory", true), got_joint_state_(false), spinner_(1)
+/// Shoulder angle with offset compensation
+double Theta_2(double a2, double a3, double x, double y, double z,
+               double d, double theta3)
 {
-  joint_names_.push_back("katana_motor1_pan_joint");
-  joint_names_.push_back("katana_motor2_lift_joint");
-  joint_names_.push_back("katana_motor3_lift_joint");
-  joint_names_.push_back("katana_motor4_lift_joint");
-  joint_names_.push_back("katana_motor5_wrist_roll_joint");
+  double s3 = std::sin(theta3);
+  double c3 = std::cos(theta3);
+  double xy_plane = std::sqrt(std::max(0.0, x*x + y*y - d*d));
+  return std::atan2(z, xy_plane) - std::atan2(a3 * s3, a2 + a3 * c3);
+}
 
-  joint_state_sub_ = nh_.subscribe("/joint_states", 1, &FollowJointTrajectoryClient::jointStateCB, this);
-  spinner_.start();
-
-  // wait for action server to come up
-  while (!traj_client_.waitForServer(ros::Duration(5.0)))
-  {
-    ROS_INFO("Waiting for the follow_joint_trajectory server");
+/// Pan angle with link offset
+double Theta_1(double x, double y, double d)
+{
+  if (std::abs(d) < 1e-9) {
+    return std::atan2(y, x);
   }
+  double xy = std::sqrt(std::max(0.0, x*x + y*y - d*d));
+  return std::atan2(y, x) + std::atan2(-xy, d);
 }
 
-FollowJointTrajectoryClient::~FollowJointTrajectoryClient()
+// ---------------------------------------------------------------------------
+int main(int argc, char ** argv)
 {
-}
+  rclcpp::init(argc, argv);
 
-void FollowJointTrajectoryClient::jointStateCB(const sensor_msgs::JointState::ConstPtr &msg)
-{
-  std::vector<double> ordered_js;
+  auto arm = std::make_shared<katana_tutorials::KatanaArmClient>(
+    "offset_inverse_kinematics");
 
-  ordered_js.resize(joint_names_.size());
-
-  for (size_t i = 0; i < joint_names_.size(); ++i)
-  {
-    bool found = false;
-    for (size_t j = 0; j < msg->name.size(); ++j)
-    {
-      if (joint_names_[i] == msg->name[j])
-      {
-        ordered_js[i] = msg->position[j];
-        found = true;
-        break;
-      }
-    }
-    if (!found)
-      return;
+  if (!arm->waitForJointState(10.0)) {
+    RCLCPP_FATAL(arm->get_logger(), "Could not get joint state.");
+    rclcpp::shutdown();
+    return 1;
   }
 
-  ROS_INFO_ONCE("Got joint state!");
-  current_joint_state_ = ordered_js;
-  got_joint_state_ = true;
-}
+  const double a2 = 35.0;
+  const double a3 = 25.0;
+  const double d  = 0.0;  // link 1 offset — 0 for Katana 6M 180 variant
+  const double reach = a2 + a3;
 
-//! Sends the command to start a given trajectory
-void FollowJointTrajectoryClient::startTrajectory(control_msgs::FollowJointTrajectoryGoal goal)
-{
-  // When to start the trajectory: 1s from now
-  goal.trajectory.header.stamp = ros::Time::now() + ros::Duration(1.0);
-  traj_client_.sendGoal(goal);
-}
-
-control_msgs::FollowJointTrajectoryGoal FollowJointTrajectoryClient::makeArmUpTrajectory()
-{
- 
-  double a2 = 35,a3 = 25,x,y,z,d1 = 0;
-  double theta1 = 0, theta2 = 0 , theta3 = 0,finalPointAngle = 0, p = 0;
+  // ── Read target from user ───────────────────────────────────────────────
+  double x, y, z;
+  std::cout << "\nKatana Full 3D IK (with link offsets)\n";
+  std::cout << "Arm reach: " << reach << " cm\n";
+  std::cout << "Enter target X Y Z (in cm, e.g. 20 10 15): ";
   std::cin >> x >> y >> z;
 
-  p = std::sqrt(std::pow(x,2) + std::pow(y,2));
-  
-  if(x > a2 + a3 || y > a2 + a3 || z > a2 + a3 || p > a2+ a3 || std::sqrt(std::pow(p,2) + std::pow(z,2)) > a2 + a3){
-     x = 60;
-     y = 0;
-     z = 0;
-
-     std::cout << "Invalid coordinate,Please fill in new coordinate" <<  std::endl;
-   
-  }
-  theta3 = Theta_3(a2,a3,x,y,z,d1);
-  theta2 = Theta_2(a2,a3,x,y,z,d1,theta3);
-  if(x != 0 || y != 0){
-     theta1 = Theta_1(x,y,d1);
-
-  }else{
-     theta1 = current_joint_state_[0];
-
+  // ── Reachability check ───────────────────────────────────────────────────
+  double p  = std::sqrt(x*x + y*y);
+  double r3 = std::sqrt(p*p + z*z);
+  if (p > reach || std::abs(z) > reach || r3 > reach) {
+    RCLCPP_WARN(arm->get_logger(),
+      "Target out of reach (distance=%.1f cm, max=%.1f cm). Using safe default.",
+      r3, reach);
+    x = 60.0; y = 0.0; z = 0.0;
   }
 
-  const size_t NUM_TRAJ_POINTS = 3;
-  const size_t NUM_JOINTS = 5;
+  // ── Solve IK ─────────────────────────────────────────────────────────────
+  double theta3 = Theta_3(a2, a3, x, y, z, d);
+  double theta2 = Theta_2(a2, a3, x, y, z, d, theta3);
+  double theta1 = (std::abs(x) > 1e-6 || std::abs(y) > 1e-6)
+                  ? Theta_1(x, y, d)
+                  : arm->currentJointPositions()[0];
 
-  // positions after calibration
-  std::vector<double> calibration_positions(NUM_JOINTS);
-  calibration_positions[0] = theta1;
-  calibration_positions[1] = theta2;
-  calibration_positions[2] = 0.0;
-  calibration_positions[3] = -theta3;
-  calibration_positions[4] = 0.0;
+  std::vector<double> target_pos = {
+    theta1,   // motor1 pan
+    theta2,   // motor2 shoulder lift
+    0.0,      // motor3 — not driven in this model
+    -theta3,  // motor4 elbow (sign matches Katana convention)
+    0.0       // motor5 wrist roll
+  };
 
-  // arm pointing straight up
-  std::vector<double> straight_up_positions(NUM_JOINTS);
-  straight_up_positions[0] = 0.0;
-  straight_up_positions[1] = 2.57;
-  straight_up_positions[2] = 0.0;
-  straight_up_positions[3] = 0.0;
-  straight_up_positions[4] = 0.0;
+  RCLCPP_INFO(arm->get_logger(),
+    "IK (offset) solution: θ1=%.3f  θ2=%.3f  θ3=%.3f", theta1, theta2, theta3);
+  RCLCPP_INFO(arm->get_logger(),
+    "Motor targets: [%.3f, %.3f, %.3f, %.3f, %.3f]",
+    target_pos[0], target_pos[1], target_pos[2], target_pos[3], target_pos[4]);
 
-  trajectory_msgs::JointTrajectory trajectory;
+  // ── Build and send trajectory ─────────────────────────────────────────────
+  auto current = arm->currentJointPositions();
+  auto traj    = katana_tutorials::makeTrajectory(
+    katana_tutorials::KatanaArmClient::ARM_JOINT_NAMES,
+    current, target_pos, 5.0, 6.0);
 
-  for (ros::Rate r = ros::Rate(10); !got_joint_state_; r.sleep())
-  {
-    ROS_DEBUG("waiting for joint state...");
-
-    if (!ros::ok())
-      exit(-1);
+  if (!arm->sendTrajectoryAndWait(traj)) {
+    RCLCPP_ERROR(arm->get_logger(), "Movement failed.");
+    rclcpp::shutdown();
+    return 1;
   }
 
-  // First, the joint names, which apply to all waypoints
-  trajectory.joint_names = joint_names_;
-
-  trajectory.points.resize(NUM_TRAJ_POINTS);
-
-  // trajectory point:
-  int ind = 0;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions = current_joint_state_;
-
-  // trajectory point:
-  ind++;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions = calibration_positions;
-
-  // trajectory point:
-  ind++;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions.resize(NUM_JOINTS);
-  trajectory.points[ind].positions = calibration_positions;
-
-  //  // all Velocities 0
-  //  for (size_t i = 0; i < NUM_TRAJ_POINTS; ++i)
-  //  {
-  //    trajectory.points[i].velocities.resize(NUM_JOINTS);
-  //    for (size_t j = 0; j < NUM_JOINTS; ++j)
-  //    {
-  //      trajectory.points[i].velocities[j] = 0.0;
-  //    }
-  //  }
-
-  control_msgs::FollowJointTrajectoryGoal goal;
-  goal.trajectory = trajectory;
-  return goal;
-}
-
-//! Returns the current state of the action
-actionlib::SimpleClientGoalState FollowJointTrajectoryClient::getState()
-{
-  return traj_client_.getState();
-}
-
-} /* namespace katana_tutorials */
-
-int main(int argc, char** argv)
-{
-  // Init the ROS node
-  ros::init(argc, argv, "follow_joint_trajectory_client");
-
-  katana_tutorials::FollowJointTrajectoryClient arm;
-  // Start the trajectory
-  arm.startTrajectory(arm.makeArmUpTrajectory());
-  // Wait for trajectory completion
-  while (!arm.getState().isDone() && ros::ok())
-  {
-    usleep(50000);
-  }
+  RCLCPP_INFO(arm->get_logger(), "Reached target position!");
+  rclcpp::shutdown();
+  return 0;
 }

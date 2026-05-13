@@ -2,18 +2,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // katana_hardware_interface.cpp
-// Implementation of the ros2_control SystemInterface for the Katana 450 arm.
-//
-// Data flow:
-//   [MoveIt 2] --cmd_pos (rad)--> write() --encoder ticks--> [KNI / Arm]
-//   [KNI / Arm] --encoder ticks--> read()  --rad--> [MoveIt 2 / /joint_states]
 
 #include "katana_driver/katana_hardware_interface.hpp"
 
 #include <cmath>
 #include <stdexcept>
+#include <algorithm>
 
-// pluginlib macro — registers the class so controller_manager can dlopen it
 #include "pluginlib/class_list_macros.hpp"
 PLUGINLIB_EXPORT_CLASS(
   katana_driver::KatanaHardwareInterface,
@@ -28,35 +23,52 @@ namespace katana_driver
 hardware_interface::CallbackReturn KatanaHardwareInterface::on_init(
   const hardware_interface::HardwareInfo & info)
 {
-  // Call base-class init first (validates joint/interface counts from URDF)
   if (hardware_interface::SystemInterface::on_init(info) !=
       hardware_interface::CallbackReturn::SUCCESS)
   {
     return hardware_interface::CallbackReturn::ERROR;
   }
 
-  // --- Read parameters from the <hardware> block in the .ros2_control.xacro ---
+  // --- Read Parameters ---
   try {
-    ip_address_  = info_.hardware_parameters.at("ip_address");
+    // Determine connection type (default to tcp if not specified)
+    connection_type_ = info_.hardware_parameters.count("connection_type") ? 
+                       info_.hardware_parameters.at("connection_type") : "tcp";
+    
     config_file_ = info_.hardware_parameters.at("config_file");
-  } catch (const std::out_of_range &) {
-    RCLCPP_FATAL(logger_,
-      "Missing required hardware parameters: 'ip_address' and/or 'config_file'.");
+
+    if (connection_type_ == "tcp") {
+      ip_address_ = info_.hardware_parameters.at("ip_address");
+      tcp_port_   = info_.hardware_parameters.count("tcp_port") ? 
+                    std::stoi(info_.hardware_parameters.at("tcp_port")) : 5566;
+    } else if (connection_type_ == "serial") {
+      serial_port_number_ = info_.hardware_parameters.count("serial_port") ? 
+                            std::stoi(info_.hardware_parameters.at("serial_port")) : 0;
+      serial_baud_        = info_.hardware_parameters.count("serial_baud") ? 
+                            std::stoi(info_.hardware_parameters.at("serial_baud")) : 57600;
+    } else {
+      RCLCPP_FATAL(logger_, "Invalid connection_type: %s. Must be 'tcp' or 'serial'.", connection_type_.c_str());
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+
+    if (info_.hardware_parameters.count("calibrate_on_startup")) {
+      calibrate_on_startup_ = (info_.hardware_parameters.at("calibrate_on_startup") == "true");
+    } else {
+      calibrate_on_startup_ = true;
+    }
+
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL(logger_, "Error parsing hardware parameters: %s", e.what());
     return hardware_interface::CallbackReturn::ERROR;
   }
 
-  if (info_.hardware_parameters.count("tcp_port")) {
-    tcp_port_ = std::stoi(info_.hardware_parameters.at("tcp_port"));
-  }
-  if (info_.hardware_parameters.count("calibrate_on_startup")) {
-    calibrate_on_startup_ =
-      (info_.hardware_parameters.at("calibrate_on_startup") == "true");
+  if (connection_type_ == "tcp") {
+    RCLCPP_INFO(logger_, "Katana HW Interface — TCP: %s:%d  cfg: %s", ip_address_.c_str(), tcp_port_, config_file_.c_str());
+  } else {
+    RCLCPP_INFO(logger_, "Katana HW Interface — Serial: /dev/ttyS%d (%d baud)  cfg: %s", serial_port_number_, serial_baud_, config_file_.c_str());
   }
 
-  RCLCPP_INFO(logger_, "Katana HW Interface — ip: %s  port: %d  cfg: %s",
-    ip_address_.c_str(), tcp_port_, config_file_.c_str());
-
-  // Allocate state / command vectors (one slot per joint declared in URDF)
+  // Allocate vectors
   hw_states_positions_.assign(info_.joints.size(), 0.0);
   hw_states_velocities_.assign(info_.joints.size(), 0.0);
   hw_commands_positions_.assign(info_.joints.size(), 0.0);
@@ -73,14 +85,8 @@ KatanaHardwareInterface::export_state_interfaces()
 {
   std::vector<hardware_interface::StateInterface> state_interfaces;
   for (std::size_t i = 0; i < info_.joints.size(); ++i) {
-    state_interfaces.emplace_back(
-      info_.joints[i].name,
-      hardware_interface::HW_IF_POSITION,
-      &hw_states_positions_[i]);
-    state_interfaces.emplace_back(
-      info_.joints[i].name,
-      hardware_interface::HW_IF_VELOCITY,
-      &hw_states_velocities_[i]);
+    state_interfaces.emplace_back(info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_states_positions_[i]);
+    state_interfaces.emplace_back(info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &hw_states_velocities_[i]);
   }
   return state_interfaces;
 }
@@ -93,16 +99,13 @@ KatanaHardwareInterface::export_command_interfaces()
 {
   std::vector<hardware_interface::CommandInterface> command_interfaces;
   for (std::size_t i = 0; i < info_.joints.size(); ++i) {
-    command_interfaces.emplace_back(
-      info_.joints[i].name,
-      hardware_interface::HW_IF_POSITION,
-      &hw_commands_positions_[i]);
+    command_interfaces.emplace_back(info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_commands_positions_[i]);
   }
   return command_interfaces;
 }
 
 // ---------------------------------------------------------------------------
-// on_activate  — open connection, init KNI, calibrate
+// on_activate
 // ---------------------------------------------------------------------------
 hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
   const rclcpp_lifecycle::State & /*previous_state*/)
@@ -110,204 +113,147 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
   RCLCPP_INFO(logger_, "Activating Katana hardware interface...");
 
   try {
-    // 1. Open TCP socket to the arm's Ethernet controller
-    //    CCdlSocket takes char* (old KNI API) so we cast away const safely
-    device_ = std::make_unique<CCdlSocket>(
-      const_cast<char*>(ip_address_.c_str()), tcp_port_);
-    RCLCPP_INFO(logger_, "TCP socket opened to %s:%d", ip_address_.c_str(), tcp_port_);
+    // 1. Open Device
+    if (connection_type_ == "tcp") {
+      device_ = std::make_unique<CCdlSocket>(const_cast<char*>(ip_address_.c_str()), tcp_port_);
+      RCLCPP_INFO(logger_, "TCP socket opened to %s:%d", ip_address_.c_str(), tcp_port_);
+    } else {
+      TCdlCOMDesc ccd;
+      ccd.port = serial_port_number_;
+      ccd.baud = serial_baud_;
+      ccd.data = 8;
+      ccd.parity = 'N';
+      ccd.stop = 1;
+      ccd.rttc = 100; // read timeout
+      ccd.wttc = 100; // write timeout
+      
+      device_ = std::make_unique<CCdlCOM>(ccd);
+      RCLCPP_INFO(logger_, "Serial port /dev/ttyS%d opened at %d baud", serial_port_number_, serial_baud_);
+    }
 
-    // 2. Init the Serial-CRC protocol layer
+    // 2. Init Protocol
     protocol_ = std::make_unique<CCplSerialCRC>();
     protocol_->init(device_.get());
-    RCLCPP_INFO(logger_, "KNI protocol initialised.");
 
-    // 3. Create the high-level CLMBase object and load the .cfg file
+    // 3. Create Katana Arm
     katana_ = std::make_unique<CLMBase>();
     katana_->create(config_file_.c_str(), protocol_.get());
-    RCLCPP_INFO(logger_, "Katana arm object created from config: %s", config_file_.c_str());
+    RCLCPP_INFO(logger_, "Katana arm object created.");
 
-    // 4. Cache encoder-to-radian conversion data for each joint
+    // 4. Cache joint info
     const TKatMOT * motors = katana_->GetBase()->GetMOT();
     for (std::size_t i = 0; i < info_.joints.size(); ++i) {
-      if (static_cast<int>(i) >= motors->cnt) {
-        // Extra joints (e.g. right finger mirrors left)
-        joint_info_[i] = joint_info_[i - 1];
-        continue;
-      }
+      if (static_cast<int>(i) >= motors->cnt) continue;
+      
       const TMotInit * init = motors->arr[i].GetInitialParameters();
       joint_info_[i].enc_per_cycle = init->encodersPerCycle;
-      joint_info_[i].angle_offset  = init->angleOffset;   // radians
+      joint_info_[i].angle_offset  = init->angleOffset;
       joint_info_[i].direction      = init->rotationDirection;
       joint_info_[i].enc_min        = motors->arr[i].GetEncoderMinPos();
       joint_info_[i].enc_max        = motors->arr[i].GetEncoderMaxPos();
-
-      RCLCPP_DEBUG(logger_,
-        "Joint[%zu] enc_per_cycle=%d  angle_offset=%.4f  dir=%d  min=%d  max=%d",
-        i,
-        joint_info_[i].enc_per_cycle,
-        joint_info_[i].angle_offset,
-        joint_info_[i].direction,
-        joint_info_[i].enc_min,
-        joint_info_[i].enc_max);
     }
 
-    // 5. Calibrate (moves arm to limit switches to find zero)
+    // 5. Calibrate
     if (calibrate_on_startup_) {
-      RCLCPP_INFO(logger_, "Calibrating Katana arm — do NOT obstruct the workspace!");
+      RCLCPP_INFO(logger_, "Calibrating Katana arm...");
       katana_->calibrate();
-      RCLCPP_INFO(logger_, "Calibration complete.");
     }
 
-    // 6. Set a safe default velocity limit (encoders / 10ms)
     katana_->setRobotVelocityLimit(20);
 
-    // 7. Do one read to initialise hw_states_ with the real current position
+    // Initial read
+    std::vector<int> encoders = katana_->getRobotEncoders(true);
     for (std::size_t i = 0; i < info_.joints.size(); ++i) {
-      // Motor index into KNI is 0-based; gripper fingers are motor 5/6
-      int motor_idx = static_cast<int>(std::min(i, info_.joints.size() - 1));
-      if (motor_idx < motors->cnt) {
-        int enc = katana_->getMotorEncoders(static_cast<short>(motor_idx), true);
-        hw_states_positions_[i] = encoderToRad(static_cast<int>(i), enc);
+      if (i < encoders.size()) {
+        hw_states_positions_[i] = encoderToRad(static_cast<int>(i), encoders[i]);
       }
       hw_commands_positions_[i] = hw_states_positions_[i];
     }
 
   } catch (const Exception & e) {
-    RCLCPP_FATAL(logger_, "KNI exception during activation: %s", e.message().c_str());
+    RCLCPP_FATAL(logger_, "KNI exception: %s", e.message().c_str());
     return hardware_interface::CallbackReturn::ERROR;
   } catch (const std::exception & e) {
-    RCLCPP_FATAL(logger_, "Exception during activation: %s", e.what());
+    RCLCPP_FATAL(logger_, "Exception: %s", e.what());
     return hardware_interface::CallbackReturn::ERROR;
   }
 
-  RCLCPP_INFO(logger_, "Katana hardware interface activated successfully.");
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
 // ---------------------------------------------------------------------------
-// on_deactivate  — freeze motors, release connection
+// on_deactivate
 // ---------------------------------------------------------------------------
 hardware_interface::CallbackReturn KatanaHardwareInterface::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
-  RCLCPP_INFO(logger_, "Deactivating Katana hardware interface...");
-  try {
-    if (katana_) {
-      katana_->freezeRobot();
-      katana_->switchRobotOff();
-    }
-  } catch (const Exception & e) {
-    RCLCPP_WARN(logger_, "KNI exception during deactivation: %s", e.message().c_str());
+  if (katana_) {
+    katana_->freezeRobot();
+    katana_->switchRobotOff();
   }
   katana_.reset();
   protocol_.reset();
   device_.reset();
-  RCLCPP_INFO(logger_, "Katana hardware interface deactivated.");
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
 // ---------------------------------------------------------------------------
-// read  — fetch encoder values, convert to radians
+// read
 // ---------------------------------------------------------------------------
 hardware_interface::return_type KatanaHardwareInterface::read(
   const rclcpp::Time & /*time*/,
   const rclcpp::Duration & /*period*/)
 {
-  if (!katana_) {
-    return hardware_interface::return_type::ERROR;
-  }
-
+  if (!katana_) return hardware_interface::return_type::ERROR;
   try {
-    // Bulk-read all motor positions in one serial round-trip
-    std::vector<int> encoders = katana_->getRobotEncoders(true /*refresh*/);
-
+    std::vector<int> encoders = katana_->getRobotEncoders(true);
     for (std::size_t i = 0; i < info_.joints.size(); ++i) {
       if (i < encoders.size()) {
         hw_states_positions_[i] = encoderToRad(static_cast<int>(i), encoders[i]);
       }
-      // Velocity is not directly readable from KNI; report zero for now.
-      hw_states_velocities_[i] = 0.0;
     }
-  } catch (const Exception & e) {
-    RCLCPP_ERROR_THROTTLE(logger_, *rclcpp::Clock::make_shared(), 1000,
-      "KNI read error: %s", e.message().c_str());
+  } catch (...) {
     return hardware_interface::return_type::ERROR;
   }
-
   return hardware_interface::return_type::OK;
 }
 
 // ---------------------------------------------------------------------------
-// write  — convert command radians → encoder ticks → send to arm
+// write
 // ---------------------------------------------------------------------------
 hardware_interface::return_type KatanaHardwareInterface::write(
   const rclcpp::Time & /*time*/,
   const rclcpp::Duration & /*period*/)
 {
-  if (!katana_) {
-    return hardware_interface::return_type::ERROR;
-  }
-
+  if (!katana_) return hardware_interface::return_type::ERROR;
   try {
-    // Build a vector of target encoder values (one per motor KNI knows about)
     const TKatMOT * motors = katana_->GetBase()->GetMOT();
-    std::vector<int> target_encoders(static_cast<std::size_t>(motors->cnt), 0);
-
+    std::vector<int> targets(static_cast<std::size_t>(motors->cnt), 0);
     for (int i = 0; i < motors->cnt; ++i) {
-      if (static_cast<std::size_t>(i) < hw_commands_positions_.size()) {
-        int enc = radToEncoder(i, hw_commands_positions_[i]);
-
-        // Clamp to the motor's safe range
-        enc = std::max(joint_info_[i].enc_min, std::min(joint_info_[i].enc_max, enc));
-        target_encoders[i] = enc;
-      }
+      int enc = radToEncoder(i, hw_commands_positions_[i]);
+      enc = std::max(joint_info_[i].enc_min, std::min(joint_info_[i].enc_max, enc));
+      targets[i] = enc;
     }
-
-    // Send all joint targets simultaneously (non-blocking)
-    // waitUntilReached=false → controller_manager calls write() again next cycle
-    katana_->moveRobotToEnc(target_encoders, false /*waitUntilReached*/, 100 /*tolerance*/);
-
-  } catch (const Exception & e) {
-    RCLCPP_ERROR_THROTTLE(logger_, *rclcpp::Clock::make_shared(), 1000,
-      "KNI write error: %s", e.message().c_str());
+    katana_->moveRobotToEnc(targets, false, 100);
+  } catch (...) {
     return hardware_interface::return_type::ERROR;
   }
-
   return hardware_interface::return_type::OK;
 }
 
-// ---------------------------------------------------------------------------
-// Private helpers — encoder <-> radian conversion
-// ---------------------------------------------------------------------------
-
-// Formula (from KNI source / katana_arm_kinematics package):
-//   angle_rad = angle_offset + direction * (encoder / enc_per_cycle) * 2*PI
-//   encoder   = (angle_rad - angle_offset) / (direction * 2*PI / enc_per_cycle)
-
 double KatanaHardwareInterface::encoderToRad(int joint_idx, int encoder) const
 {
-  if (joint_idx < 0 || static_cast<std::size_t>(joint_idx) >= joint_info_.size()) {
-    return 0.0;
-  }
   const auto & ji = joint_info_[joint_idx];
   if (ji.enc_per_cycle == 0) return 0.0;
-
-  return ji.angle_offset +
-         ji.direction * (static_cast<double>(encoder) / ji.enc_per_cycle) *
-         (2.0 * M_PI);
+  return ji.angle_offset + ji.direction * (static_cast<double>(encoder) / ji.enc_per_cycle) * (2.0 * M_PI);
 }
 
 int KatanaHardwareInterface::radToEncoder(int joint_idx, double rad) const
 {
-  if (joint_idx < 0 || static_cast<std::size_t>(joint_idx) >= joint_info_.size()) {
-    return 0;
-  }
   const auto & ji = joint_info_[joint_idx];
   if (ji.enc_per_cycle == 0) return 0;
-
-  double enc_f = (rad - ji.angle_offset) /
-                 (ji.direction * (2.0 * M_PI) / ji.enc_per_cycle);
+  double enc_f = (rad - ji.angle_offset) / (ji.direction * (2.0 * M_PI) / ji.enc_per_cycle);
   return static_cast<int>(std::round(enc_f));
 }
 
-}  // namespace katana_driver
+} // namespace katana_driver
