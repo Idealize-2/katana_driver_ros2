@@ -1,0 +1,113 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <!-- connection_type : 'tcp' or 'serial'
+         ip_address     : arm controller IP (TCP mode)
+         tcp_port       : KNI port, default 5566 (TCP mode)
+         serial_port    : port index N for /dev/ttyS<N> (serial mode)
+         serial_baud    : baud rate (serial mode)
+         config_file    : absolute path to the .cfg for your arm variant
+                          e.g. <kni_share>/KNI_4.3.0/configfiles400/katana6M180.cfg
+         calibrate_on_startup : 'true' to run calibration sequence on first activate -->
+    <xacro:macro name="katana_400_6m180_with_controlbox_ros2_control"
+                 params="name initial_positions_file
+                         connection_type
+                         ip_address
+                         tcp_port
+                         serial_port
+                         serial_baud
+                         config_file
+                         calibrate_on_startup
+                         urdf_offset_katana_motor1_pan_joint:=3.0147
+                         urdf_offset_katana_motor2_lift_joint:=0.1508
+                         urdf_offset_katana_motor3_lift_joint:=4.9553
+                         urdf_offset_katana_motor4_lift_joint:=4.8512
+                         urdf_offset_katana_motor5_wrist_roll_joint:=3.8913
+                         urdf_offset_katana_l_finger_joint:=1.5927
+                         urdf_offset_katana_r_finger_joint:=0.0
+                         urdf_flip_katana_motor1_pan_joint:=-1.0
+                         urdf_flip_katana_motor2_lift_joint:=-1.0
+                         urdf_flip_katana_motor3_lift_joint:=-1.0
+                         urdf_flip_katana_motor4_lift_joint:=-1.0
+                         urdf_flip_katana_motor5_wrist_roll_joint:=-1.0
+                         urdf_flip_katana_l_finger_joint:=1.0
+                         urdf_flip_katana_r_finger_joint:=1.0">
+        <xacro:property name="initial_positions" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
+
+        <ros2_control name="${name}" type="system">
+            <hardware>
+                <plugin>katana_driver/KatanaHardwareInterface</plugin>
+                <param name="connection_type">${connection_type}</param>
+                <param name="ip_address">${ip_address}</param>
+                <param name="tcp_port">${tcp_port}</param>
+                <param name="serial_port">${serial_port}</param>
+                <param name="serial_baud">${serial_baud}</param>
+                <param name="config_file">${config_file}</param>
+                <param name="calibrate_on_startup">${calibrate_on_startup}</param>
+                <param name="urdf_offset_katana_motor1_pan_joint">${urdf_offset_katana_motor1_pan_joint}</param>
+                <param name="urdf_offset_katana_motor2_lift_joint">${urdf_offset_katana_motor2_lift_joint}</param>
+                <param name="urdf_offset_katana_motor3_lift_joint">${urdf_offset_katana_motor3_lift_joint}</param>
+                <param name="urdf_offset_katana_motor4_lift_joint">${urdf_offset_katana_motor4_lift_joint}</param>
+                <param name="urdf_offset_katana_motor5_wrist_roll_joint">${urdf_offset_katana_motor5_wrist_roll_joint}</param>
+                <param name="urdf_offset_katana_l_finger_joint">${urdf_offset_katana_l_finger_joint}</param>
+                <param name="urdf_offset_katana_r_finger_joint">${urdf_offset_katana_r_finger_joint}</param>
+                <param name="urdf_flip_katana_motor1_pan_joint">${urdf_flip_katana_motor1_pan_joint}</param>
+                <param name="urdf_flip_katana_motor2_lift_joint">${urdf_flip_katana_motor2_lift_joint}</param>
+                <param name="urdf_flip_katana_motor3_lift_joint">${urdf_flip_katana_motor3_lift_joint}</param>
+                <param name="urdf_flip_katana_motor4_lift_joint">${urdf_flip_katana_motor4_lift_joint}</param>
+                <param name="urdf_flip_katana_motor5_wrist_roll_joint">${urdf_flip_katana_motor5_wrist_roll_joint}</param>
+                <param name="urdf_flip_katana_l_finger_joint">${urdf_flip_katana_l_finger_joint}</param>
+                <param name="urdf_flip_katana_r_finger_joint">${urdf_flip_katana_r_finger_joint}</param>
+            </hardware>
+            <joint name="katana_motor1_pan_joint">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['katana_motor1_pan_joint']}</param>
+                </state_interface>
+                <state_interface name="velocity"/>
+            </joint>
+            <joint name="katana_motor2_lift_joint">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['katana_motor2_lift_joint']}</param>
+                </state_interface>
+                <state_interface name="velocity"/>
+            </joint>
+            <joint name="katana_motor3_lift_joint">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['katana_motor3_lift_joint']}</param>
+                </state_interface>
+                <state_interface name="velocity"/>
+            </joint>
+            <joint name="katana_motor4_lift_joint">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['katana_motor4_lift_joint']}</param>
+                </state_interface>
+                <state_interface name="velocity"/>
+            </joint>
+            <joint name="katana_motor5_wrist_roll_joint">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['katana_motor5_wrist_roll_joint']}</param>
+                </state_interface>
+                <state_interface name="velocity"/>
+            </joint>
+            <joint name="katana_l_finger_joint">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['katana_l_finger_joint']}</param>
+                </state_interface>
+                <state_interface name="velocity"/>
+            </joint>
+            <joint name="katana_r_finger_joint">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['katana_r_finger_joint']}</param>
+                </state_interface>
+                <state_interface name="velocity"/>
+            </joint>
+
+        </ros2_control>
+    </xacro:macro>
+</robot>

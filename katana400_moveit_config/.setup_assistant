@@ -1,0 +1,25 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: katana_description
+    relative_path: urdf/katana_400_6m180_with_controlbox.urdf.xacro
+  srdf:
+    relative_path: config/katana_400_6m180_with_controlbox.srdf
+  package_settings:
+    author_name: kay
+    author_email: tanatoy78@gmail.com
+    generated_timestamp: 1778744000
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity

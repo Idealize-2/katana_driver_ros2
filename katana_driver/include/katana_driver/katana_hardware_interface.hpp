@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 // ros2_control
@@ -17,6 +19,7 @@
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/state.hpp"
+#include "std_srvs/srv/set_bool.hpp"
 
 // KNI SDK
 #include "kniBase.h"       // CLMBase
@@ -70,6 +73,14 @@ private:
   std::vector<double> hw_commands_positions_;
   std::vector<double> last_cmd_positions_;   // last positions actually sent to motors
 
+  // ── Motor power service ───────────────────────────────────────────────────
+  rclcpp::Node::SharedPtr                                   svc_node_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr        motor_power_svc_;
+  rclcpp::executors::SingleThreadedExecutor                 svc_executor_;
+  std::thread                                               svc_thread_;
+  std::atomic<bool>                                         motors_powered_{true};
+  std::atomic<bool>                                         reenable_requested_{false};
+
   // ── Internal Helpers ──────────────────────────────────────────────────────
   struct JointEncoderInfo {
     int    enc_per_cycle;
@@ -79,6 +90,8 @@ private:
     int    enc_max;
   };
   std::vector<JointEncoderInfo> joint_info_;
+  std::vector<double>           urdf_offsets_;   // KNI angle at URDF joint-zero for each joint
+  std::vector<double>           urdf_flips_;     // +1.0 or -1.0 per joint to match URDF axis direction
 
   double encoderToRad(int joint_idx, int encoder) const;
   int    radToEncoder(int joint_idx, double rad) const;

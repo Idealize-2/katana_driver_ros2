@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="katana_400_6m180_with_controlbox">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+
+    <!-- Hardware connection args — overridden by real_hardware.launch.py -->
+    <xacro:arg name="connection_type"        default="serial" />
+    <xacro:arg name="ip_address"             default="192.168.1.1" />
+    <xacro:arg name="tcp_port"               default="5566" />
+    <xacro:arg name="serial_port"            default="0" />
+    <xacro:arg name="serial_baud"            default="57600" />
+    <xacro:arg name="config_file"            default="$(find kni)/KNI_4.3.0/configfiles400/katana6M180.cfg" />
+    <xacro:arg name="calibrate_on_startup"   default="true" />
+
+    <!-- Import katana_400_6m180_with_controlbox urdf file -->
+    <xacro:include filename="$(find katana_description)/urdf/katana_400_6m180_with_controlbox.urdf.xacro" />
+
+    <!-- Import control_xacro -->
+    <xacro:include filename="katana_400_6m180_with_controlbox.ros2_control.xacro" />
+
+    <xacro:katana_400_6m180_with_controlbox_ros2_control
+        name="KatanaHW"
+        initial_positions_file="$(arg initial_positions_file)"
+        connection_type="$(arg connection_type)"
+        ip_address="$(arg ip_address)"
+        tcp_port="$(arg tcp_port)"
+        serial_port="$(arg serial_port)"
+        serial_baud="$(arg serial_baud)"
+        config_file="$(arg config_file)"
+        calibrate_on_startup="$(arg calibrate_on_startup)" />
+
+</robot>

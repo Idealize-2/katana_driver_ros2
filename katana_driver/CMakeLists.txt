@@ -14,6 +14,7 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(kni REQUIRED)
 
 # Derive kni install prefix from the kni CMake config dir
@@ -41,6 +42,7 @@ ament_target_dependencies(katana_hardware_interface
   pluginlib
   rclcpp
   rclcpp_lifecycle
+  std_srvs
   kni
 )
 
@@ -81,6 +83,7 @@ ament_export_dependencies(
   pluginlib
   rclcpp
   rclcpp_lifecycle
+  std_srvs
   kni
 )
 

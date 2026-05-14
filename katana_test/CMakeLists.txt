@@ -11,6 +11,7 @@ find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 add_executable(ros2control_tester src/ros2control_tester.cpp)
 
@@ -20,6 +21,7 @@ ament_target_dependencies(ros2control_tester
   sensor_msgs
   control_msgs
   trajectory_msgs
+  std_srvs
 )
 
 install(TARGETS ros2control_tester

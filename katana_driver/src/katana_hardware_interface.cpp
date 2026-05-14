@@ -88,6 +88,24 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_init(
   hw_commands_positions_.assign(info_.joints.size(), 0.0);
   joint_info_.resize(info_.joints.size());
 
+  // Per-joint URDF offsets and direction flips.
+  // offset: KNI angle when arm is at URDF joint-zero  → "urdf_offset_<joint_name>"
+  // flip  : +1.0 or -1.0 to match URDF axis sign       → "urdf_flip_<joint_name>"
+  urdf_offsets_.resize(info_.joints.size(), 0.0);
+  urdf_flips_.resize(info_.joints.size(), 1.0);
+  for (std::size_t i = 0; i < info_.joints.size(); ++i) {
+    const std::string & jname = info_.joints[i].name;
+    if (info_.hardware_parameters.count("urdf_offset_" + jname)) {
+      urdf_offsets_[i] = std::stod(info_.hardware_parameters.at("urdf_offset_" + jname));
+    }
+    if (info_.hardware_parameters.count("urdf_flip_" + jname)) {
+      double f = std::stod(info_.hardware_parameters.at("urdf_flip_" + jname));
+      urdf_flips_[i] = (f < 0.0) ? -1.0 : 1.0;
+    }
+    RCLCPP_INFO(logger_, "joint[%zu] %s  offset=%.4f  flip=%.0f",
+                i, jname.c_str(), urdf_offsets_[i], urdf_flips_[i]);
+  }
+
   is_active_ = true;
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -200,6 +218,28 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
     }
     last_cmd_positions_ = hw_commands_positions_;
 
+    // Spin a tiny service node so the tester can disable/re-enable motor power.
+    svc_node_ = std::make_shared<rclcpp::Node>("katana_hw_motor_power");
+    motor_power_svc_ = svc_node_->create_service<std_srvs::srv::SetBool>(
+      "katana_hw/set_motors_enabled",
+      [this](const std_srvs::srv::SetBool::Request::SharedPtr req,
+             std_srvs::srv::SetBool::Response::SharedPtr       resp)
+      {
+        if (req->data && !motors_powered_) {
+          reenable_requested_ = true;   // handled in write() on the CM thread
+        } else if (!req->data && motors_powered_) {
+          try {
+            katana_->switchRobotOff();
+            motors_powered_ = false;
+            RCLCPP_INFO(logger_, "Motors OFF — arm can be moved manually. Press 'e' to re-enable.");
+          } catch (...) {}
+        }
+        resp->success = true;
+        resp->message = req->data ? "enable requested" : "motors off";
+      });
+    svc_executor_.add_node(svc_node_);
+    svc_thread_ = std::thread([this]() { svc_executor_.spin(); });
+
   } catch (const Exception & e) {
     RCLCPP_FATAL(logger_, "KNI exception: %s", e.message().c_str());
     return hardware_interface::CallbackReturn::ERROR;
@@ -217,6 +257,10 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
 hardware_interface::CallbackReturn KatanaHardwareInterface::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
+  svc_executor_.cancel();
+  if (svc_thread_.joinable()) svc_thread_.join();
+  svc_node_.reset();
+
   if (katana_) {
     katana_->freezeRobot();
     katana_->switchRobotOff();
@@ -257,6 +301,29 @@ hardware_interface::return_type KatanaHardwareInterface::write(
 {
   if (!katana_) return hardware_interface::return_type::ERROR;
   if (!is_active_) return hardware_interface::return_type::OK;
+
+  // Re-enable path: switch motors back on and reseed commands from current encoders
+  // so the arm holds wherever it was moved to manually, not the old commanded position.
+  if (reenable_requested_) {
+    reenable_requested_ = false;
+    try {
+      katana_->switchRobotOn();
+      std::vector<int> enc = katana_->getRobotEncoders(true);
+      for (std::size_t i = 0; i < info_.joints.size(); ++i) {
+        if (i < enc.size())
+          hw_states_positions_[i] = encoderToRad(static_cast<int>(i), enc[i]);
+        hw_commands_positions_[i] = hw_states_positions_[i];
+      }
+      last_cmd_positions_ = hw_commands_positions_;
+      motors_powered_ = true;
+      RCLCPP_INFO(logger_, "Motors ON — holding current position.");
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(logger_, "Re-enable failed: %s", e.what());
+    }
+  }
+
+  if (!motors_powered_) return hardware_interface::return_type::OK;
+
   try {
     const TKatMOT * motors = katana_->GetBase()->GetMOT();
     std::vector<int> targets(static_cast<std::size_t>(motors->cnt), 0);
@@ -313,14 +380,16 @@ double KatanaHardwareInterface::encoderToRad(int joint_idx, int encoder) const
 {
   const auto & ji = joint_info_[joint_idx];
   if (ji.enc_per_cycle == 0) return 0.0;
-  return ji.angle_offset + ji.direction * (static_cast<double>(encoder) / ji.enc_per_cycle) * (2.0 * M_PI);
+  double kni_rad = ji.angle_offset + ji.direction * (static_cast<double>(encoder) / ji.enc_per_cycle) * (2.0 * M_PI);
+  return (kni_rad - urdf_offsets_[joint_idx]) * urdf_flips_[joint_idx];
 }
 
 int KatanaHardwareInterface::radToEncoder(int joint_idx, double rad) const
 {
   const auto & ji = joint_info_[joint_idx];
   if (ji.enc_per_cycle == 0) return 0;
-  double enc_f = (rad - ji.angle_offset) / (ji.direction * (2.0 * M_PI) / ji.enc_per_cycle);
+  double kni_rad = (rad * urdf_flips_[joint_idx]) + urdf_offsets_[joint_idx];
+  double enc_f = (kni_rad - ji.angle_offset) / (ji.direction * (2.0 * M_PI) / ji.enc_per_cycle);
   return static_cast<int>(std::round(enc_f));
 }
 

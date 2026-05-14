@@ -13,6 +13,8 @@
 //   -        Jog selected joint -0.05 rad
 //   g        WRITE – open gripper
 //   c        WRITE – close gripper
+//   d        POWER – disable motors (arm goes limp, can be moved manually)
+//   e        POWER – enable  motors (arm holds current position)
 //   ?        Show key map
 //   q        Quit
 
@@ -22,6 +24,7 @@
 #include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <trajectory_msgs/msg/joint_trajectory_point.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 
 #include <termios.h>
 #include <unistd.h>
@@ -38,9 +41,10 @@
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
-using FJT       = control_msgs::action::FollowJointTrajectory;
-using GH        = rclcpp_action::ClientGoalHandle<FJT>;
+using FJT        = control_msgs::action::FollowJointTrajectory;
+using GH         = rclcpp_action::ClientGoalHandle<FJT>;
 using JointState = sensor_msgs::msg::JointState;
+using SetBool    = std_srvs::srv::SetBool;
 
 static const std::vector<std::string> ARM_JOINTS = {
   "katana_motor1_pan_joint",
@@ -86,6 +90,8 @@ public:
 
     gripper_client_ = rclcpp_action::create_client<FJT>(
       this, "/gripper_controller/follow_joint_trajectory");
+
+    motor_power_client_ = create_client<SetBool>("katana_hw/set_motors_enabled");
   }
 
   bool has_state() const { return has_state_; }
@@ -218,6 +224,25 @@ public:
     gripper_client_->async_send_goal(goal, opts);
   }
 
+  void set_motors_enabled(bool enable)
+  {
+    if (!motor_power_client_->wait_for_service(std::chrono::seconds(2))) {
+      printf("[POWER] katana_hw/set_motors_enabled service not available\n");
+      fflush(stdout);
+      return;
+    }
+    auto req = std::make_shared<SetBool::Request>();
+    req->data = enable;
+    motor_power_client_->async_send_request(req,
+      [enable](rclcpp::Client<SetBool>::SharedFuture future) {
+        auto resp = future.get();
+        printf("[POWER] Motors %s — %s\n",
+               enable ? "ON" : "OFF",
+               resp->success ? "OK" : "FAILED");
+        fflush(stdout);
+      });
+  }
+
 private:
   // ── internal ──────────────────────────────────────────────────────────────
 
@@ -268,6 +293,7 @@ private:
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr arm_traj_pub_;
   rclcpp_action::Client<FJT>::SharedPtr arm_client_;
   rclcpp_action::Client<FJT>::SharedPtr gripper_client_;
+  rclcpp::Client<SetBool>::SharedPtr motor_power_client_;
 
   std::mutex state_mutex_;
   std::atomic<bool> has_state_{false};
@@ -314,6 +340,8 @@ static void print_help()
     "║  -        Jog selected joint  -0.05 rad          ║\n"
     "║  g        WRITE open gripper                     ║\n"
     "║  c        WRITE close gripper                    ║\n"
+    "║  d        POWER disable motors (arm goes limp)   ║\n"
+    "║  e        POWER enable  motors (hold position)   ║\n"
     "║  ?        Show this help                         ║\n"
     "║  q        Quit                                   ║\n"
     "╚══════════════════════════════════════════════════╝\n\n"
@@ -375,9 +403,11 @@ int main(int argc, char ** argv)
       case '5':              node->select_joint(4);          break;
       case '+': case '=':    node->jog(+JOG_STEP);           break;
       case '-':              node->jog(-JOG_STEP);           break;
-      case 'g':              node->send_gripper(GRIPPER_OPEN);  break;
-      case 'c':              node->send_gripper(GRIPPER_CLOSE); break;
-      case '?':              print_help();                   break;
+      case 'g':              node->send_gripper(GRIPPER_OPEN);      break;
+      case 'c':              node->send_gripper(GRIPPER_CLOSE);     break;
+      case 'd':              node->set_motors_enabled(false);        break;
+      case 'e':              node->set_motors_enabled(true);         break;
+      case '?':              print_help();                           break;
       case 'q': case '\x03': quit = true;                    break;  // q or Ctrl+C
       default:                                               break;
     }
