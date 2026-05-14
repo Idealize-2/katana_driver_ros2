@@ -17,11 +17,11 @@
                          serial_baud
                          config_file
                          calibrate_on_startup
-                         urdf_offset_katana_motor1_pan_joint:=3.0147
-                         urdf_offset_katana_motor2_lift_joint:=0.1508
-                         urdf_offset_katana_motor3_lift_joint:=4.9553
-                         urdf_offset_katana_motor4_lift_joint:=4.8512
-                         urdf_offset_katana_motor5_wrist_roll_joint:=3.8913
+                         urdf_offset_katana_motor1_pan_joint:=0.8290
+                         urdf_offset_katana_motor2_lift_joint:=2.3208
+                         urdf_offset_katana_motor3_lift_joint:=2.7353
+                         urdf_offset_katana_motor4_lift_joint:=2.8212
+                         urdf_offset_katana_motor5_wrist_roll_joint:=0.9013
                          urdf_offset_katana_l_finger_joint:=1.5927
                          urdf_offset_katana_r_finger_joint:=0.0
                          urdf_flip_katana_motor1_pan_joint:=-1.0

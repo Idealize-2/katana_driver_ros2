@@ -58,7 +58,7 @@
     <child link="katana_motor1_pan_link" />
     <origin xyz="0 0 ${base_height}" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
-    <limit effort="1.5" lower="-3.025528" upper="2.891097" velocity="2.208932"/>
+    <limit effort="1.5" lower="-3.05" upper="2.891097" velocity="2.208932"/>
   </joint>
 
   <link name="katana_motor1_pan_link">
