@@ -16,9 +16,7 @@ moveit_simple_controller_manager:
       - katana_motor4_lift_joint
       - katana_motor5_wrist_roll_joint
   gripper_controller:
-    type: GripperCommand
+    type: FollowJointTrajectory
     joints:
       - katana_l_finger_joint
       - katana_r_finger_joint
-    action_ns: gripper_cmd
-    default: true

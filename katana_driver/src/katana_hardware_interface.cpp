@@ -17,6 +17,8 @@ PLUGINLIB_EXPORT_CLASS(
 namespace katana_driver
 {
 
+bool is_active_ = false;
+bool first_write_done_ = false;
 // ---------------------------------------------------------------------------
 // on_init
 // ---------------------------------------------------------------------------
@@ -52,13 +54,25 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_init(
     }
 
     if (info_.hardware_parameters.count("calibrate_on_startup")) {
-      calibrate_on_startup_ = (info_.hardware_parameters.at("calibrate_on_startup") == "true");
+      std::string raw = info_.hardware_parameters.at("calibrate_on_startup");
+      // Accept "true","True","TRUE","1","yes" as truthy.
+      calibrate_on_startup_ = (raw == "true" || raw == "True" || raw == "TRUE"
+                                || raw == "1"  || raw == "yes");
+      RCLCPP_INFO(logger_, "calibrate_on_startup raw='%s' → %s",
+                  raw.c_str(), calibrate_on_startup_ ? "WILL calibrate" : "SKIP calibrate");
     } else {
       calibrate_on_startup_ = true;
+      RCLCPP_INFO(logger_, "calibrate_on_startup not set — defaulting to calibrate");
     }
 
+  } catch (const Exception & e) {
+    RCLCPP_FATAL(logger_, "KNI exception in on_init(): %s", e.message().c_str());
+    return hardware_interface::CallbackReturn::ERROR;
   } catch (const std::exception & e) {
-    RCLCPP_FATAL(logger_, "Error parsing hardware parameters: %s", e.what());
+    RCLCPP_FATAL(logger_, "std::exception in on_init(): %s", e.what());
+    return hardware_interface::CallbackReturn::ERROR;
+  } catch (...) {
+    RCLCPP_FATAL(logger_, "Unknown exception in on_init()");
     return hardware_interface::CallbackReturn::ERROR;
   }
 
@@ -74,6 +88,7 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_init(
   hw_commands_positions_.assign(info_.joints.size(), 0.0);
   joint_info_.resize(info_.joints.size());
 
+  is_active_ = true;
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
@@ -153,15 +168,29 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
       joint_info_[i].enc_max        = motors->arr[i].GetEncoderMaxPos();
     }
 
-    // 5. Calibrate
+    // 5. Clear any motor fault flags left from a previous session.
+    //    If the arm has an error flag set, moveRobotToEnc will immediately
+    //    return KATANA_ERROR_FLAG and the first write cycle will fail.
+    RCLCPP_INFO(logger_, "Clearing motor fault flags (unBlock)...");
+    katana_->unBlock();
+
+    // 6. Calibrate (moves joints to limits and back to find zero).
+    //    Always required after power-up. Skip only if the arm is confirmed
+    //    already calibrated from this power cycle (calibrate_on_startup=false).
     if (calibrate_on_startup_) {
-      RCLCPP_INFO(logger_, "Calibrating Katana arm...");
+      RCLCPP_INFO(logger_, "Calibrating Katana arm — arm will move to all joint limits...");
       katana_->calibrate();
+      RCLCPP_INFO(logger_, "Calibration complete.");
+    } else {
+      RCLCPP_WARN(logger_, "Skipping calibration (calibrate_on_startup=false). "
+                           "Ensure the arm was calibrated in this power cycle or "
+                           "moveRobotToEnc will throw 'Axis not calibrated'.");
     }
 
     katana_->setRobotVelocityLimit(20);
 
-    // Initial read
+    // Initial read — seed hw_commands from actual encoder positions so the
+    // first write cycle is a no-op (hold-in-place) rather than a jump to 0.
     std::vector<int> encoders = katana_->getRobotEncoders(true);
     for (std::size_t i = 0; i < info_.joints.size(); ++i) {
       if (i < encoders.size()) {
@@ -169,6 +198,7 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
       }
       hw_commands_positions_[i] = hw_states_positions_[i];
     }
+    last_cmd_positions_ = hw_commands_positions_;
 
   } catch (const Exception & e) {
     RCLCPP_FATAL(logger_, "KNI exception: %s", e.message().c_str());
@@ -226,6 +256,7 @@ hardware_interface::return_type KatanaHardwareInterface::write(
   const rclcpp::Duration & /*period*/)
 {
   if (!katana_) return hardware_interface::return_type::ERROR;
+  if (!is_active_) return hardware_interface::return_type::OK;
   try {
     const TKatMOT * motors = katana_->GetBase()->GetMOT();
     std::vector<int> targets(static_cast<std::size_t>(motors->cnt), 0);
@@ -234,9 +265,46 @@ hardware_interface::return_type KatanaHardwareInterface::write(
       enc = std::max(joint_info_[i].enc_min, std::min(joint_info_[i].enc_max, enc));
       targets[i] = enc;
     }
+    // Skip write if no joint moved more than 0.5 deg — prevents continuous
+    // moveRobotToEnc calls when the JTC re-sends the same hold position,
+    // which causes the arm to jitter as it chases its own position noise.
+    static constexpr double kDeadbandRad = 0.009;  // ~0.5 deg
+    bool changed = false;
+    for (std::size_t i = 0; i < hw_commands_positions_.size(); ++i) {
+      if (std::abs(hw_commands_positions_[i] - last_cmd_positions_[i]) > kDeadbandRad) {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) return hardware_interface::return_type::OK;
+
+    // Check if any motor is in error state before commanding.
+    // MSF_MOTCRASHED = 40, MSF_NOTVALID = 128 (from kmlMotBase.h).
+    for (int i = 0; i < motors->cnt; ++i) {
+      short status = motors->arr[i].GetPVP()->msf;
+      if (status == MSF_MOTCRASHED || status == MSF_NOTVALID) {
+        RCLCPP_WARN(logger_,
+          "Motor %d in fault state (msf=%d) — skipping write cycle", i, status);
+        return hardware_interface::return_type::OK;
+      }
+    }
     katana_->moveRobotToEnc(targets, false, 100);
+    last_cmd_positions_ = hw_commands_positions_;
+    first_write_done_ = true;
+  } catch (const Exception & e) {
+    // Log but return OK so the controller_manager does NOT deactivate the
+    // hardware — the arm may recover by itself on the next cycle.
+    RCLCPP_WARN(logger_,
+      "KNI exception in write() (skipping cycle): %s", e.message().c_str());
+    return hardware_interface::return_type::OK;
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(logger_,
+      "std::exception in write() (skipping cycle): %s", e.what());
+    return hardware_interface::return_type::OK;
   } catch (...) {
-    return hardware_interface::return_type::ERROR;
+    RCLCPP_WARN(logger_,
+      "Unknown exception in write() — skipping cycle");
+    return hardware_interface::return_type::OK;
   }
   return hardware_interface::return_type::OK;
 }

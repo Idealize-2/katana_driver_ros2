@@ -89,7 +89,7 @@ int main(int argc, char ** argv)
       for (int i = 0; i < n_motors && i < static_cast<int>(encoders.size()); ++i) {
         const TMotInit * init = motors->arr[i].GetInitialParameters();
         double deg = encoderToDegrees(init, encoders[i]);
-        std::cout << "M" << i+1 << ":" << std::setw(7) << encoders[i] << " (" << std::fixed << std::setprecision(1) << deg << "°)  ";
+        std::cout << "M" << i+1 << ":" << std::setw(7) << encoders[i] << " (" << std::fixed << std::setprecision(1) << deg << "°)  " << std::endl;
       }
       std::cout << "\r" << std::flush;
       std::this_thread::sleep_for(std::chrono::milliseconds(200));

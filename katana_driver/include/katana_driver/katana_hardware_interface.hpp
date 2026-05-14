@@ -68,6 +68,7 @@ private:
   std::vector<double> hw_states_positions_;
   std::vector<double> hw_states_velocities_;
   std::vector<double> hw_commands_positions_;
+  std::vector<double> last_cmd_positions_;   // last positions actually sent to motors
 
   // ── Internal Helpers ──────────────────────────────────────────────────────
   struct JointEncoderInfo {
