@@ -38,7 +38,7 @@ KatanaArmClient::KatanaArmClient(const std::string & node_name)
 
   // Create the action client that talks to the JointTrajectoryController
   action_client_ = rclcpp_action::create_client<FollowJointTrajectory>(
-    this, "/katana_arm_controller/follow_joint_trajectory");
+    this, "/arm_controller/follow_joint_trajectory");
 
   RCLCPP_INFO(get_logger(), "KatanaArmClient created — waiting for action server...");
   if (!action_client_->wait_for_action_server(10s)) {

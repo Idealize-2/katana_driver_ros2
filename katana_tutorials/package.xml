@@ -26,6 +26,11 @@
   <depend>sensor_msgs</depend>
   <depend>trajectory_msgs</depend>
 
+  <!-- pose_runner: MoveIt planning + YAML pose file -->
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>yaml-cpp</depend>
+
   <!-- KNI direct tutorials (4-5) -->
   <depend>kni</depend>
 

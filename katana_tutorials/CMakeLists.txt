@@ -17,6 +17,11 @@ find_package(control_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 
+# MoveIt + helpers (used by pose_runner)
+find_package(moveit_ros_planning_interface REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(yaml-cpp REQUIRED)
+
 # KNI SDK (used by tutorials 4-5)
 find_package(kni REQUIRED)
 
@@ -58,6 +63,20 @@ macro(ros2_tutorial name)
   target_link_libraries(${name} katana_arm_client)
 endmacro()
 
+# Macro: build a MoveIt tutorial executable
+macro(moveit_tutorial name)
+  add_executable(${name} src/${name}.cpp)
+  target_include_directories(${name} PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  ament_target_dependencies(${name}
+    rclcpp
+    moveit_ros_planning_interface
+    ament_index_cpp
+  )
+  target_link_libraries(${name} ${YAML_CPP_LIBRARIES})
+endmacro()
+
 # Macro: build a standalone KNI tutorial executable (no ROS 2 deps)
 macro(kni_tutorial name)
   add_executable(${name} src/${name}.cpp)
@@ -83,6 +102,9 @@ ros2_tutorial(sixR_inverse_kinematics)
 # Tutorial 3: Full 3D IK (with DH offsets) via ros2_control
 ros2_tutorial(offset_inverse_kinematics)
 
+# pose_runner: load named poses from YAML, plan + preview + execute via MoveIt
+moveit_tutorial(pose_runner)
+
 # Tutorial 4: Direct KNI encoder reader (no ros2_control needed)
 kni_tutorial(encoder_reader)
 
@@ -95,12 +117,21 @@ install(TARGETS
   follow_joint_trajectory_client
   sixR_inverse_kinematics
   offset_inverse_kinematics
+  pose_runner
   encoder_reader
   arm_disable_encoder
   EXPORT export_${PROJECT_NAME}
   LIBRARY  DESTINATION lib
   ARCHIVE  DESTINATION lib
   RUNTIME  DESTINATION lib/${PROJECT_NAME}  # ros2 run looks here
+)
+
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
 )
 
 install(DIRECTORY include/

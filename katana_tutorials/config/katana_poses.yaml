@@ -1,0 +1,35 @@
+# Named poses for the Katana 400 6M180 arm.
+# All values in radians, joint-space (URDF frame after offset/flip calibration).
+#
+# Edit this file to add your own poses. Run:
+#   ros2 run katana_tutorials pose_runner
+# to plan and execute any pose with a preview before the arm moves.
+
+poses:
+
+  home:
+    description: "Calibration/homed position (arm down after KNI homing)"
+    joints:
+      katana_motor1_pan_joint:        -3.03
+      katana_motor2_lift_joint:        2.17
+      katana_motor3_lift_joint:       -2.22
+      katana_motor4_lift_joint:       -2.03
+      katana_motor5_wrist_roll_joint: -2.99
+
+  ready:
+    description: "Neutral working position — arm raised, facing forward"
+    joints:
+      katana_motor1_pan_joint:         0.0
+      katana_motor2_lift_joint:        1.57
+      katana_motor3_lift_joint:        0.0
+      katana_motor4_lift_joint:        0.0
+      katana_motor5_wrist_roll_joint:  0.0
+
+  center:
+    description: "All joints at zero (geometric center of each joint range)"
+    joints:
+      katana_motor1_pan_joint:         0.0
+      katana_motor2_lift_joint:        0.0
+      katana_motor3_lift_joint:        0.0
+      katana_motor4_lift_joint:        0.0
+      katana_motor5_wrist_roll_joint:  0.0
