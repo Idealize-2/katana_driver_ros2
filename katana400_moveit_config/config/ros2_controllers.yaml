@@ -12,10 +12,11 @@ controller_manager:
     gripper_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
+
 arm_controller:
   ros__parameters:
     joints:
-      - katana_motor1_pan_joint
+      - katana_motor1_pan_joint 
       - katana_motor2_lift_joint
       - katana_motor3_lift_joint
       - katana_motor4_lift_joint
@@ -25,6 +26,16 @@ arm_controller:
     state_interfaces:
       - position
       - velocity
+    # Allow the trajectory to start even if current position is slightly off.
+    allow_nonzero_velocity_at_trajectory_end: true
+    constraints:
+      stopped_velocity_tolerance: 0.05
+      goal_time: 5.0
+      katana_motor1_pan_joint:   { trajectory: 0.3, goal: 0.1 }
+      katana_motor2_lift_joint:  { trajectory: 0.3, goal: 0.1 }
+      katana_motor3_lift_joint:  { trajectory: 0.3, goal: 0.1 }
+      katana_motor4_lift_joint:  { trajectory: 0.3, goal: 0.1 }
+      katana_motor5_wrist_roll_joint: { trajectory: 0.3, goal: 0.1 }
 
 gripper_controller:
   ros__parameters:
@@ -36,3 +47,10 @@ gripper_controller:
     state_interfaces:
       - position
       - velocity
+    allow_nonzero_velocity_at_trajectory_end: true
+    constraints:
+      stopped_velocity_tolerance: 0.05
+      goal_time: 5.0
+      katana_l_finger_joint: { trajectory: 0.3, goal: 0.1 }
+      katana_r_finger_joint: { trajectory: 0.3, goal: 0.1 }
+  

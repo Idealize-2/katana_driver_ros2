@@ -91,7 +91,7 @@
     <child link="katana_motor2_lift_link" />
     <origin xyz="0 0 0" rpy="${M_PI/2} 0 0"/>
     <axis xyz="0 0 1"/>
-    <limit effort="0.6" lower="-0.135228" upper="2.168572"  velocity="1.190799"/>
+    <limit effort="0.6" lower="-0.135228" upper="2.20"  velocity="1.190799"/>
   </joint>
 
   <link name="katana_motor2_lift_link">
