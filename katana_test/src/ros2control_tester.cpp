@@ -9,8 +9,8 @@
 //   h        WRITE – hold current position (2 s trajectory)
 //   0        WRITE – move all arm joints to 0 rad (home, 3 s)
 //   1-5      Select arm joint for jogging
-//   + / =    Jog selected joint +0.05 rad
-//   -        Jog selected joint -0.05 rad
+//   + / =    Jog selected joint +0.01 rad
+//   -        Jog selected joint -0.01 rad
 //   g        WRITE – open gripper
 //   c        WRITE – close gripper
 //   d        POWER – disable motors (arm goes limp, can be moved manually)
@@ -61,7 +61,7 @@ static const std::vector<std::string> GRIPPER_JOINTS = {
 
 static constexpr double GRIPPER_OPEN  = 0.30;  // rad
 static constexpr double GRIPPER_CLOSE = 0.00;  // rad
-static constexpr double JOG_STEP      = 0.5;  // rad per keypress
+static constexpr double JOG_STEP      = 0.01;  // rad per keypress
 
 // ── node ──────────────────────────────────────────────────────────────────────
 
@@ -336,8 +336,8 @@ static void print_help()
     "║  h        WRITE hold current position (2 s)      ║\n"
     "║  0        WRITE move all arm joints to 0 (3 s)   ║\n"
     "║  1 – 5   Select arm joint to jog                 ║\n"
-    "║  + / =    Jog selected joint  +0.05 rad          ║\n"
-    "║  -        Jog selected joint  -0.05 rad          ║\n"
+    "║  + / =    Jog selected joint  +0.01 rad          ║\n"
+    "║  -        Jog selected joint  -0.01 rad          ║\n"
     "║  g        WRITE open gripper                     ║\n"
     "║  c        WRITE close gripper                    ║\n"
     "║  d        POWER disable motors (arm goes limp)   ║\n"

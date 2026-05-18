@@ -18,9 +18,9 @@
                          config_file
                          calibrate_on_startup
                          urdf_offset_katana_motor1_pan_joint:=0.8290
-                         urdf_offset_katana_motor2_lift_joint:=2.3208
-                         urdf_offset_katana_motor3_lift_joint:=2.7353
-                         urdf_offset_katana_motor4_lift_joint:=2.8212
+                         urdf_offset_katana_motor2_lift_joint:=2.2731
+                         urdf_offset_katana_motor3_lift_joint:=2.7957
+                         urdf_offset_katana_motor4_lift_joint:=2.9095
                          urdf_offset_katana_motor5_wrist_roll_joint:=0.9013
                          urdf_offset_katana_l_finger_joint:=1.5927
                          urdf_offset_katana_r_finger_joint:=0.0

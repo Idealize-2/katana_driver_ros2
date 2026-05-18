@@ -121,9 +121,9 @@ kni_rad  = (rad * urdf_flip_<joint>) + urdf_offset_<joint>
 
 Current calibrated values (Katana 400 6M180, all joints flipped -1 except fingers):
 - motor1 offset=0.8290, flip=-1
-- motor2 offset=2.3208, flip=-1
-- motor3 offset=2.7353, flip=-1
-- motor4 offset=2.8212, flip=-1
+- motor2 offset=2.2731, flip=-1
+- motor3 offset=2.7957, flip=-1
+- motor4 offset=2.9095, flip=-1
 - motor5 offset=0.9013, flip=-1
 - l_finger offset=1.5927, flip=+1
 - r_finger offset=0.0,   flip=+1
