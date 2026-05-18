@@ -233,6 +233,8 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
       for (std::size_t i = 0; i < info_.joints.size(); ++i)
         kni_last_cmd_[i] = hw_states_positions_[i];
       kni_idle_count_ = kIdleThresh;  // first send will be moreflag=1 (hold)
+      kni_target_enc_.assign(mc, 0);
+      kni_ve_.assign(mc, 0.0);
     }
 
     // Launch background KNI worker.
@@ -360,35 +362,28 @@ void KatanaHardwareInterface::kni_loop()
       // ── 1. Read actual encoders (~55 ms) ───────────────────────────────────
       std::vector<int> enc = katana_->getRobotEncoders(true);
 
-      // ── 2. Update position cache ───────────────────────────────────────────
+      // ── 2+3. Update position cache and fetch latest command ──────────────────
+      std::vector<double> cmds;
       {
         std::lock_guard<std::mutex> lk(kni_mtx_);
         for (std::size_t i = 0; i < info_.joints.size() && i < enc.size(); ++i)
           hw_pos_cache_[i] = encoderToRad(static_cast<int>(i), enc[i]);
-      }
-
-      // ── 3. Get latest command ──────────────────────────────────────────────
-      std::vector<double> cmds;
-      {
-        std::lock_guard<std::mutex> lk(kni_mtx_);
         cmds = hw_cmd_cache_;
       }
 
       // ── 4. Convert to target encoders with safety margin ──────────────────
       const TKatMOT * motors = katana_->GetBase()->GetMOT();
       const int mc = motors->cnt;
-      std::vector<int> target_enc(mc, 0);
       for (int i = 0; i < mc; ++i) {
         int e = radToEncoder(i, cmds[i]);
-        static constexpr int kEncMargin = 200;
         e = std::max(joint_info_[i].enc_min + kEncMargin,
                      std::min(joint_info_[i].enc_max - kEncMargin, e));
-        target_enc[i] = e;
+        kni_target_enc_[i] = e;
       }
 
       // ── 5. Deadband / idle detection ───────────────────────────────────────
       bool changed = false;
-      for (int i = 0; i < mc; ++i)
+      for (std::size_t i = 0; i < cmds.size(); ++i)
         if (std::abs(cmds[i] - kni_last_cmd_[i]) > kDeadbandRad)
           { changed = true; break; }
 
@@ -400,15 +395,8 @@ void KatanaHardwareInterface::kni_loop()
         kni_idle_count_++;
       }
 
-      // If the arm is already held at goal (moreflag=1 was sent and no new
-      // command arrived), skip the expensive spline send. Just refresh the
-      // position cache from the actual encoders and wait.
-      if (kni_hold_sent_) {
-        std::lock_guard<std::mutex> lk(kni_mtx_);
-        for (std::size_t i = 0; i < info_.joints.size() && i < enc.size(); ++i)
-          hw_pos_cache_[i] = encoderToRad(static_cast<int>(i), enc[i]);
-        continue;
-      }
+      // Cache already updated in 2+3; if held at goal just skip the spline send.
+      if (kni_hold_sent_) continue;
 
       // ── 6. Motor fault check (cached PVP) ─────────────────────────────────
       bool fault = false;
@@ -427,29 +415,35 @@ void KatanaHardwareInterface::kni_loop()
       int  moreflag = is_last ? 1 : 0;
 
       // ── 8. Hermite cubic coefficients → sendSplineToMotor (~245 ms total) ──
-      //   vs  = start velocity (end velocity of previous segment)
-      //   ve  = end velocity: 0 for final segment (arm stops),
-      //         else average segment rate (velocity continuity between segments)
       const double T  = static_cast<double>(kSplineT);
       const double T2 = T * T, T3 = T * T * T;
-      std::vector<double> ve(mc, 0.0);
+      std::fill(kni_ve_.begin(), kni_ve_.end(), 0.0);
       if (!is_last) {
         for (int i = 0; i < mc; ++i)
-          ve[i] = static_cast<double>(target_enc[i] - kni_last_enc_[i]) / T;
+          kni_ve_[i] = static_cast<double>(kni_target_enc_[i] - kni_last_enc_[i]) / T;
+      }
+
+      // Pre-update cache to goal BEFORE the 245ms send so JTC's hold command
+      // is already at the goal position — closes the race window that caused
+      // intermittent backward drift when JTC read a stale position mid-send.
+      if (is_last) {
+        std::lock_guard<std::mutex> lk(kni_mtx_);
+        for (int i = 0; i < mc && i < static_cast<int>(hw_pos_cache_.size()); ++i)
+          hw_pos_cache_[i] = encoderToRad(i, kni_target_enc_[i]);
       }
 
       for (int i = 0; i < mc; ++i) {
         const double s   = static_cast<double>(kni_last_enc_[i]);
-        const double e   = static_cast<double>(target_enc[i]);
+        const double e   = static_cast<double>(kni_target_enc_[i]);
         const double vs  = kni_last_vel_[i];
-        const double vei = ve[i];
+        const double vei = kni_ve_[i];
         const double p1  = s;
         const double p2  = vs * T;
         const double p3  = 3.0*(e-s) - (2.0*vs + vei)*T;
         const double p4  = (vs + vei)*T - 2.0*(e-s);
         katana_->sendSplineToMotor(
           static_cast<short>(i),
-          static_cast<short>(target_enc[i]),
+          static_cast<short>(kni_target_enc_[i]),
           static_cast<short>(kSplineT),
           static_cast<short>(std::round(p1)),
           static_cast<short>(std::round(64.0    * p2 / T)),
@@ -459,18 +453,9 @@ void KatanaHardwareInterface::kni_loop()
       katana_->startSplineMovement(true /*exactflag*/, moreflag);
 
       // ── 9. Update KNI-thread state for next iteration ─────────────────────
-      kni_last_enc_ = target_enc;
-      kni_last_vel_ = ve;
-
-      if (is_last) {
-        // Arm will settle at target_enc. Update position cache to the goal NOW
-        // so JTC's "hold" command after trajectory completion tracks the goal,
-        // not the 300ms-stale cache position that would cause a backward drift.
-        kni_hold_sent_ = true;
-        std::lock_guard<std::mutex> lk(kni_mtx_);
-        for (int i = 0; i < mc && i < static_cast<int>(hw_pos_cache_.size()); ++i)
-          hw_pos_cache_[i] = encoderToRad(i, target_enc[i]);
-      }
+      kni_last_enc_ = kni_target_enc_;
+      kni_last_vel_ = kni_ve_;
+      if (is_last) kni_hold_sent_ = true;
 
     } catch (const Exception & e) {
       RCLCPP_WARN(logger_, "KNI worker: %s", e.message().c_str());

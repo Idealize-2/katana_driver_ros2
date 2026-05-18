@@ -90,6 +90,11 @@ private:
   bool                     kni_hold_sent_   = false;
   static constexpr int     kSplineT         = 40;  // 400 ms per segment
   static constexpr int     kIdleThresh      = 3;   // stable cycles → moreflag=1
+  static constexpr int     kEncMargin       = 200; // ticks from firmware limit
+
+  // Pre-allocated work buffers — avoids per-cycle heap allocation in kni_loop()
+  std::vector<int>         kni_target_enc_;
+  std::vector<double>      kni_ve_;
 
   // ── Motor power service ───────────────────────────────────────────────────
   rclcpp::Node::SharedPtr                                   svc_node_;
