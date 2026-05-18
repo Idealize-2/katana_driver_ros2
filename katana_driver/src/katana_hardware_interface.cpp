@@ -17,8 +17,6 @@ PLUGINLIB_EXPORT_CLASS(
 namespace katana_driver
 {
 
-bool is_active_ = false;
-bool first_write_done_ = false;
 // ---------------------------------------------------------------------------
 // on_init
 // ---------------------------------------------------------------------------
@@ -106,7 +104,6 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_init(
                 i, jname.c_str(), urdf_offsets_[i], urdf_flips_[i]);
   }
 
-  is_active_ = true;
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
@@ -199,13 +196,14 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
       RCLCPP_INFO(logger_, "Calibrating Katana arm — arm will move to all joint limits...");
       katana_->calibrate();
       RCLCPP_INFO(logger_, "Calibration complete.");
+      // Calibration drives joints into mechanical stops which sets error flags.
+      // Clear them now so the first moveRobotToEnc call is not rejected.
+      katana_->unBlock();
     } else {
       RCLCPP_WARN(logger_, "Skipping calibration (calibrate_on_startup=false). "
                            "Ensure the arm was calibrated in this power cycle or "
                            "moveRobotToEnc will throw 'Axis not calibrated'.");
     }
-
-    katana_->setRobotVelocityLimit(20);
 
     // Initial read — seed hw_commands from actual encoder positions so the
     // first write cycle is a no-op (hold-in-place) rather than a jump to 0.
@@ -216,7 +214,30 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
       }
       hw_commands_positions_[i] = hw_states_positions_[i];
     }
-    last_cmd_positions_ = hw_commands_positions_;
+    // Seed shared caches so read() returns a valid position immediately.
+    hw_pos_cache_.resize(info_.joints.size());
+    hw_cmd_cache_.resize(info_.joints.size());
+    for (std::size_t i = 0; i < info_.joints.size(); ++i) {
+      hw_pos_cache_[i] = hw_states_positions_[i];
+      hw_cmd_cache_[i] = hw_states_positions_[i];
+    }
+
+    // Seed KNI-thread state from actual encoder positions.
+    {
+      int mc = katana_->GetBase()->GetMOT()->cnt;
+      kni_last_enc_.assign(mc, 0);
+      kni_last_vel_.assign(mc, 0.0);
+      for (int i = 0; i < mc && i < static_cast<int>(encoders.size()); ++i)
+        kni_last_enc_[i] = encoders[i];
+      kni_last_cmd_.assign(info_.joints.size(), 0.0);
+      for (std::size_t i = 0; i < info_.joints.size(); ++i)
+        kni_last_cmd_[i] = hw_states_positions_[i];
+      kni_idle_count_ = kIdleThresh;  // first send will be moreflag=1 (hold)
+    }
+
+    // Launch background KNI worker.
+    kni_running_ = true;
+    kni_thread_  = std::thread([this]() { kni_loop(); });
 
     // Spin a tiny service node so the tester can disable/re-enable motor power.
     svc_node_ = std::make_shared<rclcpp::Node>("katana_hw_motor_power");
@@ -261,9 +282,12 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_deactivate(
   if (svc_thread_.joinable()) svc_thread_.join();
   svc_node_.reset();
 
+  kni_running_ = false;
+  if (kni_thread_.joinable()) kni_thread_.join();
+
   if (katana_) {
-    katana_->freezeRobot();
-    katana_->switchRobotOff();
+    try { katana_->freezeRobot(); } catch (...) {}
+    try { katana_->switchRobotOff(); } catch (...) {}
   }
   katana_.reset();
   protocol_.reset();
@@ -272,108 +296,193 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_deactivate(
 }
 
 // ---------------------------------------------------------------------------
-// read
+// read  — instant mutex copy from KNI worker cache
 // ---------------------------------------------------------------------------
 hardware_interface::return_type KatanaHardwareInterface::read(
   const rclcpp::Time & /*time*/,
   const rclcpp::Duration & /*period*/)
 {
   if (!katana_) return hardware_interface::return_type::ERROR;
-  try {
-    std::vector<int> encoders = katana_->getRobotEncoders(true);
-    for (std::size_t i = 0; i < info_.joints.size(); ++i) {
-      if (i < encoders.size()) {
-        hw_states_positions_[i] = encoderToRad(static_cast<int>(i), encoders[i]);
-      }
-    }
-  } catch (...) {
-    return hardware_interface::return_type::ERROR;
-  }
+  std::lock_guard<std::mutex> lock(kni_mtx_);
+  hw_states_positions_ = hw_pos_cache_;
   return hardware_interface::return_type::OK;
 }
 
 // ---------------------------------------------------------------------------
-// write
+// write  — instant mutex copy to KNI worker cache
 // ---------------------------------------------------------------------------
 hardware_interface::return_type KatanaHardwareInterface::write(
   const rclcpp::Time & /*time*/,
   const rclcpp::Duration & /*period*/)
 {
   if (!katana_) return hardware_interface::return_type::ERROR;
-  if (!is_active_) return hardware_interface::return_type::OK;
-
-  // Re-enable path: switch motors back on and reseed commands from current encoders
-  // so the arm holds wherever it was moved to manually, not the old commanded position.
-  if (reenable_requested_) {
-    reenable_requested_ = false;
-    try {
-      katana_->switchRobotOn();
-      std::vector<int> enc = katana_->getRobotEncoders(true);
-      for (std::size_t i = 0; i < info_.joints.size(); ++i) {
-        if (i < enc.size())
-          hw_states_positions_[i] = encoderToRad(static_cast<int>(i), enc[i]);
-        hw_commands_positions_[i] = hw_states_positions_[i];
-      }
-      last_cmd_positions_ = hw_commands_positions_;
-      motors_powered_ = true;
-      RCLCPP_INFO(logger_, "Motors ON — holding current position.");
-    } catch (const std::exception & e) {
-      RCLCPP_WARN(logger_, "Re-enable failed: %s", e.what());
-    }
-  }
-
-  if (!motors_powered_) return hardware_interface::return_type::OK;
-
-  try {
-    const TKatMOT * motors = katana_->GetBase()->GetMOT();
-    std::vector<int> targets(static_cast<std::size_t>(motors->cnt), 0);
-    for (int i = 0; i < motors->cnt; ++i) {
-      int enc = radToEncoder(i, hw_commands_positions_[i]);
-      enc = std::max(joint_info_[i].enc_min, std::min(joint_info_[i].enc_max, enc));
-      targets[i] = enc;
-    }
-    // Skip write if no joint moved more than 0.5 deg — prevents continuous
-    // moveRobotToEnc calls when the JTC re-sends the same hold position,
-    // which causes the arm to jitter as it chases its own position noise.
-    static constexpr double kDeadbandRad = 0.009;  // ~0.5 deg
-    bool changed = false;
-    for (std::size_t i = 0; i < hw_commands_positions_.size(); ++i) {
-      if (std::abs(hw_commands_positions_[i] - last_cmd_positions_[i]) > kDeadbandRad) {
-        changed = true;
-        break;
-      }
-    }
-    if (!changed) return hardware_interface::return_type::OK;
-
-    // Check if any motor is in error state before commanding.
-    // MSF_MOTCRASHED = 40, MSF_NOTVALID = 128 (from kmlMotBase.h).
-    for (int i = 0; i < motors->cnt; ++i) {
-      short status = motors->arr[i].GetPVP()->msf;
-      if (status == MSF_MOTCRASHED || status == MSF_NOTVALID) {
-        RCLCPP_WARN(logger_,
-          "Motor %d in fault state (msf=%d) — skipping write cycle", i, status);
-        return hardware_interface::return_type::OK;
-      }
-    }
-    katana_->moveRobotToEnc(targets, false, 100);
-    last_cmd_positions_ = hw_commands_positions_;
-    first_write_done_ = true;
-  } catch (const Exception & e) {
-    // Log but return OK so the controller_manager does NOT deactivate the
-    // hardware — the arm may recover by itself on the next cycle.
-    RCLCPP_WARN(logger_,
-      "KNI exception in write() (skipping cycle): %s", e.message().c_str());
-    return hardware_interface::return_type::OK;
-  } catch (const std::exception & e) {
-    RCLCPP_WARN(logger_,
-      "std::exception in write() (skipping cycle): %s", e.what());
-    return hardware_interface::return_type::OK;
-  } catch (...) {
-    RCLCPP_WARN(logger_,
-      "Unknown exception in write() — skipping cycle");
-    return hardware_interface::return_type::OK;
-  }
+  std::lock_guard<std::mutex> lock(kni_mtx_);
+  hw_cmd_cache_ = hw_commands_positions_;
   return hardware_interface::return_type::OK;
+}
+
+// ---------------------------------------------------------------------------
+// kni_loop  — background thread: all actual KNI TCP communication runs here
+// ---------------------------------------------------------------------------
+void KatanaHardwareInterface::kni_loop()
+{
+  while (kni_running_) {
+    try {
+      // ── Reenable path ──────────────────────────────────────────────────────
+      if (reenable_requested_) {
+        reenable_requested_ = false;
+        katana_->switchRobotOn();
+        std::vector<int> enc = katana_->getRobotEncoders(true);
+        std::vector<double> pos(info_.joints.size(), 0.0);
+        for (std::size_t i = 0; i < info_.joints.size() && i < enc.size(); ++i)
+          pos[i] = encoderToRad(static_cast<int>(i), enc[i]);
+        {
+          std::lock_guard<std::mutex> lk(kni_mtx_);
+          hw_pos_cache_ = pos;
+          hw_cmd_cache_ = pos;
+        }
+        for (std::size_t i = 0; i < kni_last_enc_.size() && i < enc.size(); ++i)
+          kni_last_enc_[i] = enc[i];
+        std::fill(kni_last_vel_.begin(), kni_last_vel_.end(), 0.0);
+        kni_last_cmd_   = pos;
+        kni_idle_count_ = kIdleThresh;
+        kni_hold_sent_  = false;
+        motors_powered_ = true;
+        RCLCPP_INFO(logger_, "Motors ON — holding current position.");
+        continue;
+      }
+
+      if (!motors_powered_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        continue;
+      }
+
+      // ── 1. Read actual encoders (~55 ms) ───────────────────────────────────
+      std::vector<int> enc = katana_->getRobotEncoders(true);
+
+      // ── 2. Update position cache ───────────────────────────────────────────
+      {
+        std::lock_guard<std::mutex> lk(kni_mtx_);
+        for (std::size_t i = 0; i < info_.joints.size() && i < enc.size(); ++i)
+          hw_pos_cache_[i] = encoderToRad(static_cast<int>(i), enc[i]);
+      }
+
+      // ── 3. Get latest command ──────────────────────────────────────────────
+      std::vector<double> cmds;
+      {
+        std::lock_guard<std::mutex> lk(kni_mtx_);
+        cmds = hw_cmd_cache_;
+      }
+
+      // ── 4. Convert to target encoders with safety margin ──────────────────
+      const TKatMOT * motors = katana_->GetBase()->GetMOT();
+      const int mc = motors->cnt;
+      std::vector<int> target_enc(mc, 0);
+      for (int i = 0; i < mc; ++i) {
+        int e = radToEncoder(i, cmds[i]);
+        static constexpr int kEncMargin = 200;
+        e = std::max(joint_info_[i].enc_min + kEncMargin,
+                     std::min(joint_info_[i].enc_max - kEncMargin, e));
+        target_enc[i] = e;
+      }
+
+      // ── 5. Deadband / idle detection ───────────────────────────────────────
+      bool changed = false;
+      for (int i = 0; i < mc; ++i)
+        if (std::abs(cmds[i] - kni_last_cmd_[i]) > kDeadbandRad)
+          { changed = true; break; }
+
+      if (changed) {
+        kni_idle_count_ = 0;
+        kni_hold_sent_  = false;  // new command → arm needs to move again
+        kni_last_cmd_   = cmds;
+      } else {
+        kni_idle_count_++;
+      }
+
+      // If the arm is already held at goal (moreflag=1 was sent and no new
+      // command arrived), skip the expensive spline send. Just refresh the
+      // position cache from the actual encoders and wait.
+      if (kni_hold_sent_) {
+        std::lock_guard<std::mutex> lk(kni_mtx_);
+        for (std::size_t i = 0; i < info_.joints.size() && i < enc.size(); ++i)
+          hw_pos_cache_[i] = encoderToRad(static_cast<int>(i), enc[i]);
+        continue;
+      }
+
+      // ── 6. Motor fault check (cached PVP) ─────────────────────────────────
+      bool fault = false;
+      for (int i = 0; i < mc; ++i) {
+        short msf = motors->arr[i].GetPVP()->msf;
+        if (msf == MSF_MOTCRASHED || msf == MSF_NOTVALID) {
+          RCLCPP_WARN(logger_, "Motor %d fault (msf=%d) — skipping", i, (int)msf);
+          fault = true;
+          break;
+        }
+      }
+      if (fault) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); continue; }
+
+      // ── 7. moreflag: 0 = chain next segment, 1 = stop here ────────────────
+      bool is_last  = (kni_idle_count_ >= kIdleThresh);
+      int  moreflag = is_last ? 1 : 0;
+
+      // ── 8. Hermite cubic coefficients → sendSplineToMotor (~245 ms total) ──
+      //   vs  = start velocity (end velocity of previous segment)
+      //   ve  = end velocity: 0 for final segment (arm stops),
+      //         else average segment rate (velocity continuity between segments)
+      const double T  = static_cast<double>(kSplineT);
+      const double T2 = T * T, T3 = T * T * T;
+      std::vector<double> ve(mc, 0.0);
+      if (!is_last) {
+        for (int i = 0; i < mc; ++i)
+          ve[i] = static_cast<double>(target_enc[i] - kni_last_enc_[i]) / T;
+      }
+
+      for (int i = 0; i < mc; ++i) {
+        const double s   = static_cast<double>(kni_last_enc_[i]);
+        const double e   = static_cast<double>(target_enc[i]);
+        const double vs  = kni_last_vel_[i];
+        const double vei = ve[i];
+        const double p1  = s;
+        const double p2  = vs * T;
+        const double p3  = 3.0*(e-s) - (2.0*vs + vei)*T;
+        const double p4  = (vs + vei)*T - 2.0*(e-s);
+        katana_->sendSplineToMotor(
+          static_cast<short>(i),
+          static_cast<short>(target_enc[i]),
+          static_cast<short>(kSplineT),
+          static_cast<short>(std::round(p1)),
+          static_cast<short>(std::round(64.0    * p2 / T)),
+          static_cast<short>(std::round(1024.0  * p3 / T2)),
+          static_cast<short>(std::round(32768.0 * p4 / T3)));
+      }
+      katana_->startSplineMovement(true /*exactflag*/, moreflag);
+
+      // ── 9. Update KNI-thread state for next iteration ─────────────────────
+      kni_last_enc_ = target_enc;
+      kni_last_vel_ = ve;
+
+      if (is_last) {
+        // Arm will settle at target_enc. Update position cache to the goal NOW
+        // so JTC's "hold" command after trajectory completion tracks the goal,
+        // not the 300ms-stale cache position that would cause a backward drift.
+        kni_hold_sent_ = true;
+        std::lock_guard<std::mutex> lk(kni_mtx_);
+        for (int i = 0; i < mc && i < static_cast<int>(hw_pos_cache_.size()); ++i)
+          hw_pos_cache_[i] = encoderToRad(i, target_enc[i]);
+      }
+
+    } catch (const Exception & e) {
+      RCLCPP_WARN(logger_, "KNI worker: %s", e.message().c_str());
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(logger_, "KNI worker: %s", e.what());
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    } catch (...) {
+      RCLCPP_WARN(logger_, "KNI worker: unknown exception");
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
 }
 
 double KatanaHardwareInterface::encoderToRad(int joint_idx, int encoder) const

@@ -40,6 +40,6 @@ def generate_launch_description():
             'tcp_port':             tcp_port,
             'calibrate_on_startup': calibrate,
         }),
-        # launch("move_group.launch.py"),
+        launch("move_group.launch.py"),
         launch("moveit_rviz.launch.py"),
     ])

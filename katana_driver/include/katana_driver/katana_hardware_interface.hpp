@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -71,7 +72,24 @@ private:
   std::vector<double> hw_states_positions_;
   std::vector<double> hw_states_velocities_;
   std::vector<double> hw_commands_positions_;
-  std::vector<double> last_cmd_positions_;   // last positions actually sent to motors
+
+  static constexpr double kDeadbandRad = 0.009;  // ~0.5 deg
+
+  // ── Async KNI worker ──────────────────────────────────────────────────────
+  std::mutex               kni_mtx_;
+  std::vector<double>      hw_pos_cache_;    // KNI thread → read()
+  std::vector<double>      hw_cmd_cache_;    // write() → KNI thread
+  std::atomic<bool>        kni_running_{false};
+  std::thread              kni_thread_;
+
+  // KNI-thread-only state (never touched by the CM thread)
+  std::vector<int>         kni_last_enc_;
+  std::vector<double>      kni_last_vel_;
+  std::vector<double>      kni_last_cmd_;
+  int                      kni_idle_count_  = 0;
+  bool                     kni_hold_sent_   = false;
+  static constexpr int     kSplineT         = 40;  // 400 ms per segment
+  static constexpr int     kIdleThresh      = 3;   // stable cycles → moreflag=1
 
   // ── Motor power service ───────────────────────────────────────────────────
   rclcpp::Node::SharedPtr                                   svc_node_;
@@ -95,6 +113,7 @@ private:
 
   double encoderToRad(int joint_idx, int encoder) const;
   int    radToEncoder(int joint_idx, double rad) const;
+  void   kni_loop();
 
   rclcpp::Logger logger_{rclcpp::get_logger("KatanaHardwareInterface")};
 };
