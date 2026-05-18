@@ -76,8 +76,40 @@ The older `katana` package (ROS 1 style, `KatanaNode.cpp`) **does not build** �
 - `controller_manager` (`ros2_control_node`) loads `KatanaHardwareInterface`
 - Three controllers spawned: `joint_state_broadcaster`, `arm_controller`, `gripper_controller`
 - Config: `katana400_moveit_config/config/ros2_controllers.yaml`
-- Update rate: 8 Hz (KNI read+write cycle ~110 ms)
+- Update rate: **7 Hz** — `read()` and `write()` are instant mutex copies (< 1 µs); all KNI TCP I/O runs in a background thread
 - Spawners are delayed 5 s (`TimerAction`) to avoid a pluginlib cache segfault on fresh boot
+
+### Async KNI worker thread
+
+KNI TCP is too slow for a synchronous control loop (55 ms read + 245 ms write > 125 ms budget at 8 Hz).
+All KNI communication is handled by a background thread (`kni_loop()`) that runs at its natural pace (~3 Hz):
+
+```
+ros2_control CM thread (7 Hz)          kni_loop() background thread (~3 Hz)
+─────────────────────────────          ──────────────────────────────────────
+read()  →  hw_states = hw_pos_cache    1. getRobotEncoders(true)  ~55 ms
+write() →  hw_cmd_cache = hw_commands  2. update hw_pos_cache     (mutex)
+           (both < 1 µs, mutex only)   3. get hw_cmd_cache        (mutex)
+                                       4. deadband / idle count
+                                       5. motor fault check
+                                       6. sendSplineToMotor × 7   ~245 ms
+                                       7. startSplineMovement(moreflag)
+```
+
+**Spline chaining** (`moreflag=0`) eliminates the stop-start motion that `moveRobotToEnc` (TPS)
+causes — the firmware chains successive 400 ms segments without stopping because the next
+segment arrives ~100 ms before the current one completes (T=400 ms > ~300 ms loop cycle).
+
+**`kni_hold_sent_` flag** — after the final segment (`moreflag=1`), `hw_pos_cache_` is
+immediately updated to the target position so JTC's hold command equals the reached goal
+(prevents ~300 ms backward drift caused by stale cache feedback).
+
+**Trajectory tolerance** — `trajectory: 0.0` is set intentionally for all arm joints in
+`ros2_controllers.yaml`. This disables per-joint path tolerance checking because the 300 ms
+cache staleness creates false tolerance violations. Final `goal: 0.15` rad tolerance is kept.
+
+**Speed** — controlled by `default_velocity_scaling_factor` / `default_acceleration_scaling_factor`
+in `joint_limits.yaml` (currently 0.3). Increase toward 1.0 to go faster.
 
 ### URDF offset/flip calibration
 `KatanaHardwareInterface` applies per-joint offsets and direction flips to map KNI encoder space → URDF joint space. Parameters come from `katana_400_6m180_with_controlbox.ros2_control.xacro`:
@@ -155,6 +187,10 @@ parameters=[
 | `Returned 0 controllers in list` | `moveit_controllers.yaml` (flat format) not parsed by ROS 2 parameter loader | Use `move_group_params.yaml` (ROS 2 format) — already fixed. See `problem/moveit_0_controllers_in_list.md` |
 | `START_STATE_INVALID` — joint out of bounds | Real arm position slightly outside URDF limits | Expand limit in URDF (`katana_400_6m180.urdf.xacro`) and `joint_limits.yaml` |
 | RViz model doesn't match real arm | URDF offset/flip wrong | Re-derive offsets; update `.ros2_control.xacro` |
+| `PATH_TOLERANCE_VIOLATED` during trajectory | 300 ms stale cache makes JTC measure false position error | Set `trajectory: 0.0` for arm joints in `ros2_controllers.yaml` — already done. See `problem/arm_stopstart_and_async_kni_worker.md` |
+| Arm drifts backward ~300 ms after reaching goal | JTC hold targets stale cache position, not actual goal | `kni_hold_sent_` flag proactively updates cache to goal — already fixed. See `problem/arm_stopstart_and_async_kni_worker.md` |
+| `FirmwareException: Encoder out of range (axis N)` | Target encoder too close to firmware soft limit | `kEncMargin=200` clamp in `kni_loop()` — already fixed |
+| Arm stops at every MoveIt waypoint (stop-start motion) | `moveRobotToEnc` / TPS always decelerates to zero | Async KNI worker + spline chaining — already fixed. See `problem/arm_stopstart_and_async_kni_worker.md` |
 
 ## Helper scripts (workspace root)
 
