@@ -51,6 +51,6 @@ gripper_controller:
     constraints:
       stopped_velocity_tolerance: 0.05
       goal_time: 5.0
-      katana_l_finger_joint: { trajectory: 0.3, goal: 0.1 }
-      katana_r_finger_joint: { trajectory: 0.3, goal: 0.1 }
+      katana_l_finger_joint: { trajectory: 0.0, goal: 0.1 }
+      katana_r_finger_joint: { trajectory: 0.0, goal: 0.1 }
   

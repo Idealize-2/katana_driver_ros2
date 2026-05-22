@@ -7,5 +7,5 @@ initial_positions:
   katana_motor3_lift_joint: -2.1272
   katana_motor4_lift_joint: -2.02
   katana_motor5_wrist_roll_joint: -2.98
-  katana_l_finger_joint: 0.0
-  katana_r_finger_joint: 0.0
+  katana_l_finger_joint: 0.27
+  katana_r_finger_joint: 0.27

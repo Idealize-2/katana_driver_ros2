@@ -97,8 +97,10 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_init(
       urdf_offsets_[i] = std::stod(info_.hardware_parameters.at("urdf_offset_" + jname));
     }
     if (info_.hardware_parameters.count("urdf_flip_" + jname)) {
-      double f = std::stod(info_.hardware_parameters.at("urdf_flip_" + jname));
-      urdf_flips_[i] = (f < 0.0) ? -1.0 : 1.0;
+      urdf_flips_[i] = std::stod(info_.hardware_parameters.at("urdf_flip_" + jname));
+      // Allow any non-zero value — gear-reduced joints (e.g. finger) use fractional
+      // scale factors rather than ±1.  Zero would cause divide-by-zero in radToEncoder.
+      if (urdf_flips_[i] == 0.0) urdf_flips_[i] = 1.0;
     }
     RCLCPP_INFO(logger_, "joint[%zu] %s  offset=%.4f  flip=%.0f",
                 i, jname.c_str(), urdf_offsets_[i], urdf_flips_[i]);
@@ -214,12 +216,26 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
       }
       hw_commands_positions_[i] = hw_states_positions_[i];
     }
+    // r_finger (joint index 6) has no physical motor — mirror l_finger (index 5)
+    // so the gripper JTC sees identical state AND command for both joints when it
+    // activates. Without this, r_finger starts at 0 while l_finger is at its
+    // calibrated position, which makes the JTC's on_activate() return FAILURE
+    // (command-vs-state inconsistency check), leaving the action server absent.
+    if (info_.joints.size() >= 6) {
+      hw_states_positions_[6]   = hw_states_positions_[5];
+      hw_commands_positions_[6] = hw_commands_positions_[5];
+    }
     // Seed shared caches so read() returns a valid position immediately.
     hw_pos_cache_.resize(info_.joints.size());
     hw_cmd_cache_.resize(info_.joints.size());
     for (std::size_t i = 0; i < info_.joints.size(); ++i) {
       hw_pos_cache_[i] = hw_states_positions_[i];
       hw_cmd_cache_[i] = hw_states_positions_[i];
+    }
+    // Mirror r_finger in the shared caches too (same reason as above).
+    if (hw_pos_cache_.size() > 6) {
+      hw_pos_cache_[6] = hw_pos_cache_[5];
+      hw_cmd_cache_[6] = hw_cmd_cache_[5];
     }
 
     // Seed KNI-thread state from actual encoder positions.
@@ -368,6 +384,8 @@ void KatanaHardwareInterface::kni_loop()
         std::lock_guard<std::mutex> lk(kni_mtx_);
         for (std::size_t i = 0; i < info_.joints.size() && i < enc.size(); ++i)
           hw_pos_cache_[i] = encoderToRad(static_cast<int>(i), enc[i]);
+        // r_finger (joint 6) has no physical motor — always mirrors l_finger (joint 5)
+        if (hw_pos_cache_.size() > 6) hw_pos_cache_[6] = hw_pos_cache_[5];
         cmds = hw_cmd_cache_;
       }
 
@@ -426,13 +444,31 @@ void KatanaHardwareInterface::kni_loop()
       // Pre-update cache to goal BEFORE the 245ms send so JTC's hold command
       // is already at the goal position — closes the race window that caused
       // intermittent backward drift when JTC read a stale position mid-send.
+      //
+      // Exception: gripper motor (index 5).  Its gear-reduced travel is slow
+      // enough that the motor is still mid-travel when is_last fires.  Pre-
+      // updating hw_pos_cache_[5] here caused JTC to declare success before
+      // the gripper physically moved, and the next real encoder read then
+      // immediately overwrote the cache back to the open position.  For the
+      // gripper we always let the real encoder report position — JTC waits
+      // until the encoder actually arrives within goal tolerance.
       if (is_last) {
         std::lock_guard<std::mutex> lk(kni_mtx_);
-        for (int i = 0; i < mc && i < static_cast<int>(hw_pos_cache_.size()); ++i)
+        for (int i = 0; i < mc && i < static_cast<int>(hw_pos_cache_.size()); ++i) {
+          if (i == 5) continue;  // gripper: no pre-update, use real encoder
           hw_pos_cache_[i] = encoderToRad(i, kni_target_enc_[i]);
+        }
+        // r_finger (joint 6) mirrors l_finger — updated on the next real read
+        if (hw_pos_cache_.size() > 6) hw_pos_cache_[6] = hw_pos_cache_[5];
       }
 
+      // ── 8a. Arm motors 0–4: Hermite cubic spline ──────────────────────────────
+      // Motor 5 (gripper) is intentionally skipped: the Katana 400 firmware
+      // ignores sendSplineToMotor for motor 6 — it has its own TPS controller
+      // that is only reachable via moveMotorToEnc().  Sending spline data to it
+      // has no effect (confirmed empirically: encoder does not change).
       for (int i = 0; i < mc; ++i) {
+        if (i == 5) continue;  // gripper handled below via moveMotorToEnc
         const double s   = static_cast<double>(kni_last_enc_[i]);
         const double e   = static_cast<double>(kni_target_enc_[i]);
         const double vs  = kni_last_vel_[i];
@@ -451,6 +487,20 @@ void KatanaHardwareInterface::kni_loop()
           static_cast<short>(std::round(32768.0 * p4 / T3)));
       }
       katana_->startSplineMovement(true /*exactflag*/, moreflag);
+
+      // ── 8b. Gripper motor (5): TPS via moveMotorToEnc ─────────────────────
+      // Fire non-blocking; kni_loop encoder reads track its progress so JTC
+      // sees the actual position advancing and declares success correctly.
+      // Only re-send when the target actually changes to avoid spamming the
+      // controller (kni_last_enc_[5] is updated below after each fire).
+      if (kni_target_enc_[5] != kni_last_enc_[5]) {
+        katana_->moveMotorToEnc(
+          static_cast<short>(5),
+          kni_target_enc_[5],
+          /*waitUntilReached=*/false,
+          /*encTolerance=*/100,
+          /*waitTimeout=*/0);
+      }
 
       // ── 9. Update KNI-thread state for next iteration ─────────────────────
       kni_last_enc_ = kni_target_enc_;
@@ -482,7 +532,10 @@ int KatanaHardwareInterface::radToEncoder(int joint_idx, double rad) const
 {
   const auto & ji = joint_info_[joint_idx];
   if (ji.enc_per_cycle == 0) return 0;
-  double kni_rad = (rad * urdf_flips_[joint_idx]) + urdf_offsets_[joint_idx];
+  // Forward:  urdf = (kni_rad - offset) * flip
+  // Inverse:  kni_rad = rad / flip + offset      (division, not multiplication)
+  // For ±1 flip both are identical; for fractional gear-ratio flips only division is correct.
+  double kni_rad = (rad / urdf_flips_[joint_idx]) + urdf_offsets_[joint_idx];
   double enc_f = (kni_rad - ji.angle_offset) / (ji.direction * (2.0 * M_PI) / ji.enc_per_cycle);
   return static_cast<int>(std::round(enc_f));
 }

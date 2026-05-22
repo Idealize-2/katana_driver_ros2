@@ -22,14 +22,14 @@
                          urdf_offset_katana_motor3_lift_joint:=2.7957
                          urdf_offset_katana_motor4_lift_joint:=2.9095
                          urdf_offset_katana_motor5_wrist_roll_joint:=0.9013
-                         urdf_offset_katana_l_finger_joint:=1.5927
+                         urdf_offset_katana_l_finger_joint:=0.7040
                          urdf_offset_katana_r_finger_joint:=0.0
                          urdf_flip_katana_motor1_pan_joint:=-1.0
                          urdf_flip_katana_motor2_lift_joint:=-1.0
                          urdf_flip_katana_motor3_lift_joint:=-1.0
                          urdf_flip_katana_motor4_lift_joint:=-1.0
                          urdf_flip_katana_motor5_wrist_roll_joint:=-1.0
-                         urdf_flip_katana_l_finger_joint:=1.0
+                         urdf_flip_katana_l_finger_joint:=0.3255
                          urdf_flip_katana_r_finger_joint:=1.0">
         <xacro:property name="initial_positions" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
 
