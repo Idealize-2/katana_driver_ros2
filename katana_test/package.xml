@@ -19,6 +19,8 @@
   <depend>std_srvs</depend>
   <depend>ament_index_cpp</depend>
   <depend>kni</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>yaml-cpp</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -13,7 +13,7 @@ def generate_launch_description():
     )
 
     pose_runner = Node(
-        package="katana_tutorials",
+        package="katana_test",
         executable="pose_runner",
         output="screen",
         parameters=[

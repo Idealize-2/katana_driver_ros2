@@ -117,7 +117,7 @@ int main(int argc, char ** argv)
                          : std::cin;
 
   // ── Load poses ───────────────────────────────────────────────────────────
-  std::string pkg = ament_index_cpp::get_package_share_directory("katana_tutorials");
+  std::string pkg = ament_index_cpp::get_package_share_directory("katana_test");
   std::string yaml_path = pkg + "/config/katana_poses.yaml";
 
   std::vector<Pose> poses;

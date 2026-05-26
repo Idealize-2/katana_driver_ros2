@@ -16,6 +16,8 @@ find_package(trajectory_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(kni REQUIRED)
+find_package(moveit_ros_planning_interface REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # Derive KNI library directory from the CMake config location
 # kni_DIR = <prefix>/share/kni/cmake → go up 3 levels
@@ -59,32 +61,55 @@ target_link_libraries(kni_gripper_test
   ${KNI_LIB_DIR}/libknicommon.a
 )
 
-# ── kni_spline_gripper_test (direct sendSplineToMotor teleop for gripper) ─────
+# ── encoder_reader (direct KNI, no ROS) ──────────────────────────────────────
 
-add_executable(kni_spline_gripper_test src/kni_spline_gripper_test.cpp)
-
-target_include_directories(kni_spline_gripper_test PRIVATE ${KNI_INCLUDE_DIR})
-
-ament_target_dependencies(kni_spline_gripper_test
-  rclcpp
-  ament_index_cpp
-  kni
-)
-
-target_link_libraries(kni_spline_gripper_test
+add_executable(encoder_reader src/encoder_reader.cpp)
+target_include_directories(encoder_reader PRIVATE ${KNI_INCLUDE_DIR})
+target_link_libraries(encoder_reader
   ${KNI_LIB_DIR}/libKNIBase.so
   ${KNI_LIB_DIR}/libKNI_LM.so
   ${KNI_LIB_DIR}/libKNI_InvKin.so
   ${KNI_LIB_DIR}/libknicommon.a
 )
 
+# ── arm_disable_encoder (direct KNI, no ROS) ─────────────────────────────────
+
+add_executable(arm_disable_encoder src/arm_disable_encoder.cpp)
+target_include_directories(arm_disable_encoder PRIVATE ${KNI_INCLUDE_DIR})
+target_link_libraries(arm_disable_encoder
+  ${KNI_LIB_DIR}/libKNIBase.so
+  ${KNI_LIB_DIR}/libKNI_LM.so
+  ${KNI_LIB_DIR}/libKNI_InvKin.so
+  ${KNI_LIB_DIR}/libknicommon.a
+)
+
+# ── pose_runner (MoveIt + yaml-cpp interactive pose runner) ──────────────────
+
+add_executable(pose_runner src/pose_runner.cpp)
+ament_target_dependencies(pose_runner
+  rclcpp
+  moveit_ros_planning_interface
+  ament_index_cpp
+)
+target_link_libraries(pose_runner ${YAML_CPP_LIBRARIES})
+
 # ── install ───────────────────────────────────────────────────────────────────
 
 install(TARGETS
   ros2control_tester
   kni_gripper_test
-  kni_spline_gripper_test
+  encoder_reader
+  arm_disable_encoder
+  pose_runner
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
 )
 
 ament_package()

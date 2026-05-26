@@ -1,7 +1,7 @@
 # This config file is used by ros2_control (real hardware mode)
 controller_manager:
   ros__parameters:
-    update_rate: 7  # read()/write() are instant mutex copies; KNI runs in background thread
+    update_rate: 50  # read()/write() are instant mutex copies; KNI runs in background thread
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster

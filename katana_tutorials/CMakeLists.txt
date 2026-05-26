@@ -17,20 +17,11 @@ find_package(control_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 
-# MoveIt + helpers (used by pose_runner)
-find_package(moveit_ros_planning_interface REQUIRED)
-find_package(ament_index_cpp REQUIRED)
-find_package(yaml-cpp REQUIRED)
-
-# KNI SDK (used by tutorials 4-5)
+# KNI SDK (used by tutorial 4 — ik_pose_mover)
 find_package(kni REQUIRED)
-
-# Derive KNI install paths from kni_DIR (same trick as katana_driver)
-# kni_DIR = <prefix>/share/kni/cmake  → prefix is 3 levels up
 get_filename_component(kni_PREFIX "${kni_DIR}/../../.." ABSOLUTE)
 set(KNI_INCLUDE_DIR "${kni_PREFIX}/include")
 set(KNI_LIB_DIR     "${kni_PREFIX}/lib")
-message(STATUS "[katana_tutorials] kni include: ${KNI_INCLUDE_DIR}")
 
 # ── Shared library (KatanaArmClient — used by tutorials 1-3) ─────────────────
 add_library(katana_arm_client SHARED
@@ -49,9 +40,7 @@ ament_target_dependencies(katana_arm_client
   trajectory_msgs
 )
 
-# ── Macro helpers ─────────────────────────────────────────────────────────────
-
-# Macro: build a ROS 2 tutorial executable (links against katana_arm_client)
+# ── Macro: build a ROS 2 tutorial executable (links against katana_arm_client) ──
 macro(ros2_tutorial name)
   add_executable(${name} src/${name}.cpp)
   target_include_directories(${name} PRIVATE
@@ -61,34 +50,6 @@ macro(ros2_tutorial name)
     rclcpp rclcpp_action control_msgs sensor_msgs trajectory_msgs
   )
   target_link_libraries(${name} katana_arm_client)
-endmacro()
-
-# Macro: build a MoveIt tutorial executable
-macro(moveit_tutorial name)
-  add_executable(${name} src/${name}.cpp)
-  target_include_directories(${name} PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-  ament_target_dependencies(${name}
-    rclcpp
-    moveit_ros_planning_interface
-    ament_index_cpp
-  )
-  target_link_libraries(${name} ${YAML_CPP_LIBRARIES})
-endmacro()
-
-# Macro: build a standalone KNI tutorial executable (no ROS 2 deps)
-macro(kni_tutorial name)
-  add_executable(${name} src/${name}.cpp)
-  target_include_directories(${name} PRIVATE
-    ${KNI_INCLUDE_DIR}
-  )
-  target_link_libraries(${name}
-    ${KNI_LIB_DIR}/libKNIBase.so
-    ${KNI_LIB_DIR}/libKNI_LM.so
-    ${KNI_LIB_DIR}/libKNI_InvKin.so
-    ${KNI_LIB_DIR}/libknicommon.a
-  )
 endmacro()
 
 # ── Tutorial targets ──────────────────────────────────────────────────────────
@@ -102,14 +63,15 @@ ros2_tutorial(sixR_inverse_kinematics)
 # Tutorial 3: Full 3D IK (with DH offsets) via ros2_control
 ros2_tutorial(offset_inverse_kinematics)
 
-# pose_runner: load named poses from YAML, plan + preview + execute via MoveIt
-moveit_tutorial(pose_runner)
-
-# Tutorial 4: Direct KNI encoder reader (no ros2_control needed)
-kni_tutorial(encoder_reader)
-
-# Tutorial 5: Disable motors + keep reading encoders (direct KNI)
-kni_tutorial(arm_disable_encoder)
+# Tutorial 4: Calibrate → limp & observe → IK check → moveRobotTo (direct KNI)
+add_executable(ik_pose_mover src/ik_pose_mover.cpp)
+target_include_directories(ik_pose_mover PRIVATE ${KNI_INCLUDE_DIR})
+target_link_libraries(ik_pose_mover
+  ${KNI_LIB_DIR}/libKNIBase.so
+  ${KNI_LIB_DIR}/libKNI_LM.so
+  ${KNI_LIB_DIR}/libKNI_InvKin.so
+  ${KNI_LIB_DIR}/libknicommon.a
+)
 
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS
@@ -117,17 +79,11 @@ install(TARGETS
   follow_joint_trajectory_client
   sixR_inverse_kinematics
   offset_inverse_kinematics
-  pose_runner
-  encoder_reader
-  arm_disable_encoder
+  ik_pose_mover
   EXPORT export_${PROJECT_NAME}
   LIBRARY  DESTINATION lib
   ARCHIVE  DESTINATION lib
   RUNTIME  DESTINATION lib/${PROJECT_NAME}  # ros2 run looks here
-)
-
-install(DIRECTORY config/
-  DESTINATION share/${PROJECT_NAME}/config
 )
 
 install(DIRECTORY launch/

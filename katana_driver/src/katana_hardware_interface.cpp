@@ -221,7 +221,7 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
     // activates. Without this, r_finger starts at 0 while l_finger is at its
     // calibrated position, which makes the JTC's on_activate() return FAILURE
     // (command-vs-state inconsistency check), leaving the action server absent.
-    if (info_.joints.size() >= 6) {
+    if (info_.joints.size() > 6) {
       hw_states_positions_[6]   = hw_states_positions_[5];
       hw_commands_positions_[6] = hw_commands_positions_[5];
     }
@@ -444,31 +444,16 @@ void KatanaHardwareInterface::kni_loop()
       // Pre-update cache to goal BEFORE the 245ms send so JTC's hold command
       // is already at the goal position — closes the race window that caused
       // intermittent backward drift when JTC read a stale position mid-send.
-      //
-      // Exception: gripper motor (index 5).  Its gear-reduced travel is slow
-      // enough that the motor is still mid-travel when is_last fires.  Pre-
-      // updating hw_pos_cache_[5] here caused JTC to declare success before
-      // the gripper physically moved, and the next real encoder read then
-      // immediately overwrote the cache back to the open position.  For the
-      // gripper we always let the real encoder report position — JTC waits
-      // until the encoder actually arrives within goal tolerance.
       if (is_last) {
         std::lock_guard<std::mutex> lk(kni_mtx_);
-        for (int i = 0; i < mc && i < static_cast<int>(hw_pos_cache_.size()); ++i) {
-          if (i == 5) continue;  // gripper: no pre-update, use real encoder
+        for (int i = 0; i < mc && i < static_cast<int>(hw_pos_cache_.size()); ++i)
           hw_pos_cache_[i] = encoderToRad(i, kni_target_enc_[i]);
-        }
-        // r_finger (joint 6) mirrors l_finger — updated on the next real read
+        // r_finger mirrors l_finger here too
         if (hw_pos_cache_.size() > 6) hw_pos_cache_[6] = hw_pos_cache_[5];
       }
 
-      // ── 8a. Arm motors 0–4: Hermite cubic spline ──────────────────────────────
-      // Motor 5 (gripper) is intentionally skipped: the Katana 400 firmware
-      // ignores sendSplineToMotor for motor 6 — it has its own TPS controller
-      // that is only reachable via moveMotorToEnc().  Sending spline data to it
-      // has no effect (confirmed empirically: encoder does not change).
       for (int i = 0; i < mc; ++i) {
-        if (i == 5) continue;  // gripper handled below via moveMotorToEnc
+        if(i == 5)continue; // skip l_finger (index 5) — we will send the same command on r_finger (index 6) which has the physical motor
         const double s   = static_cast<double>(kni_last_enc_[i]);
         const double e   = static_cast<double>(kni_target_enc_[i]);
         const double vs  = kni_last_vel_[i];
@@ -488,19 +473,17 @@ void KatanaHardwareInterface::kni_loop()
       }
       katana_->startSplineMovement(true /*exactflag*/, moreflag);
 
-      // ── 8b. Gripper motor (5): TPS via moveMotorToEnc ─────────────────────
-      // Fire non-blocking; kni_loop encoder reads track its progress so JTC
-      // sees the actual position advancing and declares success correctly.
-      // Only re-send when the target actually changes to avoid spamming the
-      // controller (kni_last_enc_[5] is updated below after each fire).
-      if (kni_target_enc_[5] != kni_last_enc_[5]) {
-        katana_->moveMotorToEnc(
-          static_cast<short>(5),
-          kni_target_enc_[5],
-          /*waitUntilReached=*/false,
-          /*encTolerance=*/100,
-          /*waitTimeout=*/0);
-      }
+      // Fire non-blocking; kni_loop encoder reads track its progress so JTC                                                                                                
+      // sees the actual position advancing and declares success correctly.                                                                                                 
+      // Only re-send when the target actually changes to avoid spamming the                                                                                                
+      // controller (kni_last_enc_[5] is updated below after each fire).                                                                                                    
+      if (kni_target_enc_[5] != kni_last_enc_[5]) {                                                                                                                         
+        katana_->moveMotorToEnc(                                                                                                                                            
+          static_cast<short>(5),                                                                                                                                            
+          kni_target_enc_[5],                                                                                                                                               
+          /*waitUntilReached=*/false,                                                                                                                                       
+          /*encTolerance=*/100,                                                                                                                                             
+          /*waitTimeout=*/0);      
 
       // ── 9. Update KNI-thread state for next iteration ─────────────────────
       kni_last_enc_ = kni_target_enc_;
