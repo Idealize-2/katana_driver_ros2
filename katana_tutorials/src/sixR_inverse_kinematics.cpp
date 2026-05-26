@@ -1,7 +1,7 @@
 // =============================================================================
 // Tutorial 2: sixR_inverse_kinematics.cpp
 // =============================================================================
-// ROS 2 port — 3D Inverse Kinematics for the Katana arm (no link offsets)
+// ROS 2 — 3D Inverse Kinematics for the Katana 400 6M180 arm (no link offsets)
 //
 // WHAT IT DOES:
 //   User types an X, Y, Z target (in cm, relative to the base).
@@ -9,17 +9,21 @@
 //   and moves the arm to that position.
 //
 // IK MODEL:
-//   The Katana 450 arm is modelled as two links in a vertical plane:
-//     a2 = 35 cm  (upper arm segment)
-//     a3 = 25 cm  (forearm segment)
+//   The Katana 400 6M180 is modelled as two links in a vertical plane.
+//   Link lengths are taken from katana6M180.cfg [ENDEFFECTOR]:
+//     a2 = 19.1 cm  (segment2 = 191.0 mm — shoulder to elbow)
+//     a3 = 31.33 cm (segment3 + segment4 = 147.3 + 166.0 = 313.3 mm — elbow to TCP)
 //   Joint 1 (pan)  = atan2(y, x)
 //   Joint 2 (lift) = law-of-cosines shoulder angle
 //   Joint 3 (lift) = law-of-cosines elbow angle
 //   Joints 4, 5 = fixed at 0 (this is the simplified 3R model)
 //
+// NOTE: For exact reachability validation use Tutorial 4 (ik_pose_mover) which
+//       calls KNI's own IKCalculate() with the full kinematic model.
+//
 // RUN:
 //   ros2 run katana_tutorials sixR_inverse_kinematics
-//   Then type: X Y Z  (e.g.  20 10 15)
+//   Then type: X Y Z  (in cm, e.g.  15 10 10)
 // =============================================================================
 
 #include <cmath>
@@ -76,16 +80,18 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  // Katana 450 segment lengths (cm)
-  const double a2 = 35.0;
-  const double a3 = 25.0;
-  const double reach = a2 + a3;   // maximum reach = 60 cm
+  // Katana 400 6M180 segment lengths (from katana6M180.cfg [ENDEFFECTOR], in cm)
+  //   segment2 = 191.0 mm              →  19.10 cm  (shoulder to elbow)
+  //   segment3 + segment4 = 313.3 mm   →  31.33 cm  (elbow to TCP)
+  const double a2 = 19.10;
+  const double a3 = 31.33;
+  const double reach = a2 + a3;   // maximum reach ≈ 50.4 cm
 
   // ── Read target from user ───────────────────────────────────────────────
   double x, y, z;
-  std::cout << "\nKatana 3D IK (6R simplified model)\n";
-  std::cout << "Arm reach: " << reach << " cm\n";
-  std::cout << "Enter target X Y Z (in cm, e.g. 20 10 15): ";
+  std::cout << "\nKatana 400 6M180 — 3D IK (simplified 3R model)\n";
+  std::cout << "Arm reach: " << reach << " cm  (a2=" << a2 << " cm, a3=" << a3 << " cm)\n";
+  std::cout << "Enter target X Y Z (in cm, e.g. 15 10 10): ";
   std::cin >> x >> y >> z;
 
   // ── Reachability check ───────────────────────────────────────────────────

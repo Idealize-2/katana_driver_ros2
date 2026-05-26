@@ -1,164 +1,95 @@
-/*
- * follow_joint_trajectory_client.cpp
- *
- *  Created on: 06.11.2011
- *      Author: martin
- */
+// =============================================================================
+// Tutorial 5: pr2_joint_trajectory_client.cpp
+// =============================================================================
+// ROS 2 — Multi-waypoint trajectory demo for the Katana 400 6M180 arm.
+//
+// WHAT IT DOES:
+//   Sends the arm through a scripted 4-waypoint sequence using the
+//   FollowJointTrajectory action server:
+//
+//     1. current         — wherever the arm is right now   (t =  0 s)
+//     2. calibration     — post-calibration rest pose      (t =  5 s)
+//     3. straight_up     — arm pointing vertically         (t = 10 s)
+//     4. calibration     — back to rest pose               (t = 15 s)
+//
+//   Each segment is sent as a separate FollowJointTrajectory goal so the
+//   arm reaches each waypoint before the next command is sent.
+//
+// REQUIRES:
+//   ros2_control driver running (real_hardware.launch.py or full_system.launch.py)
+//
+// RUN:
+//   ros2 run katana_tutorials pr2_joint_trajectory_client
+// =============================================================================
 
-#include <katana_tutorials/pr2_joint_trajectory_client.h>
+#include <cmath>
+#include <iostream>
+#include "rclcpp/rclcpp.hpp"
+#include "katana_tutorials/katana_arm_client.hpp"
 
-namespace katana_tutorials
+int main(int argc, char ** argv)
 {
+  rclcpp::init(argc, argv);
 
-Pr2JointTrajectoryClient::Pr2JointTrajectoryClient() :
-    traj_client_("/katana_arm_controller/joint_trajectory_action", true), got_joint_state_(false), spinner_(1)
-{
-  joint_names_.push_back("katana_motor1_pan_joint");
-  joint_names_.push_back("katana_motor2_lift_joint");
-  joint_names_.push_back("katana_motor3_lift_joint");
-  joint_names_.push_back("katana_motor4_lift_joint");
-  joint_names_.push_back("katana_motor5_wrist_roll_joint");
+  auto arm = std::make_shared<katana_tutorials::KatanaArmClient>(
+    "pr2_joint_trajectory_client");
 
-  joint_state_sub_ = nh_.subscribe("/joint_states", 1, &Pr2JointTrajectoryClient::jointStateCB, this);
-  spinner_.start();
-
-  // wait for action server to come up
-  while (!traj_client_.waitForServer(ros::Duration(5.0)))
-  {
-    ROS_INFO("Waiting for the joint_trajectory_action server");
+  // ── Wait for the arm to publish joint states ─────────────────────────────
+  RCLCPP_INFO(arm->get_logger(), "Waiting for joint state...");
+  if (!arm->waitForJointState(15.0)) {
+    RCLCPP_FATAL(arm->get_logger(), "No joint state received — is the driver running?");
+    rclcpp::shutdown();
+    return 1;
   }
-}
 
-Pr2JointTrajectoryClient::~Pr2JointTrajectoryClient()
-{
-}
+  // ── Named poses (rad) ────────────────────────────────────────────────────
+  //   Post-calibration rest pose (arm folded at top after calibration)
+  const std::vector<double> calibration = {-2.96, 2.14, -2.16, -1.97, -2.93};
 
-void Pr2JointTrajectoryClient::jointStateCB(const sensor_msgs::JointState::ConstPtr &msg)
-{
-  std::vector<double> ordered_js;
+  //   Arm pointing vertically upward
+  const std::vector<double> straight_up = {0.0, 1.57, 0.0, 0.0, 0.0};
 
-  ordered_js.resize(joint_names_.size());
+  const auto & JOINTS = katana_tutorials::KatanaArmClient::ARM_JOINT_NAMES;
 
-  for (size_t i = 0; i < joint_names_.size(); ++i)
+  // ── Execute the sequence ─────────────────────────────────────────────────
+
+  // Move 1: current → calibration pose
+  RCLCPP_INFO(arm->get_logger(), "Move 1/3: current → calibration pose");
   {
-    bool found = false;
-    for (size_t j = 0; j < msg->name.size(); ++j)
-    {
-      if (joint_names_[i] == msg->name[j])
-      {
-        ordered_js[i] = msg->position[j];
-        found = true;
-        break;
-      }
+    auto current = arm->currentJointPositions();
+    auto traj    = katana_tutorials::makeTrajectory(JOINTS, current, calibration, 5.0, 6.0);
+    if (!arm->sendTrajectoryAndWait(traj)) {
+      RCLCPP_ERROR(arm->get_logger(), "Move 1 failed.");
+      rclcpp::shutdown();
+      return 1;
     }
-    if (!found)
-      return;
   }
+  RCLCPP_INFO(arm->get_logger(), "  Reached calibration pose.");
 
-  ROS_INFO_ONCE("Got joint state!");
-  current_joint_state_ = ordered_js;
-  got_joint_state_ = true;
-}
-
-//! Sends the command to start a given trajectory
-void Pr2JointTrajectoryClient::startTrajectory(control_msgs::JointTrajectoryGoal goal)
-{
-  // When to start the trajectory: 1s from now
-  goal.trajectory.header.stamp = ros::Time::now() + ros::Duration(1.0);
-  traj_client_.sendGoal(goal);
-}
-
-control_msgs::JointTrajectoryGoal Pr2JointTrajectoryClient::makeArmUpTrajectory()
-{
-  const size_t NUM_TRAJ_POINTS = 4;
-  const size_t NUM_JOINTS = 5;
-
-  // positions after calibration
-  std::vector<double> calibration_positions(NUM_JOINTS);
-  calibration_positions[0] = -2.96;
-  calibration_positions[1] = 2.14;
-  calibration_positions[2] = -2.16;
-  calibration_positions[3] = -1.97;
-  calibration_positions[4] = -2.93;
-
-  // arm pointing straight up
-  std::vector<double> straight_up_positions(NUM_JOINTS);
-  straight_up_positions[0] = 0.0;
-  straight_up_positions[1] = 1.57;
-  straight_up_positions[2] = 0.0;
-  straight_up_positions[3] = 0.0;
-  straight_up_positions[4] = 0.0;
-
-  trajectory_msgs::JointTrajectory trajectory;
-
-  for (ros::Rate r = ros::Rate(10); !got_joint_state_; r.sleep())
+  // Move 2: calibration → straight up
+  RCLCPP_INFO(arm->get_logger(), "Move 2/3: calibration → straight up");
   {
-    ROS_DEBUG("waiting for joint state...");
-
-    if (!ros::ok())
-      exit(-1);
+    auto traj = katana_tutorials::makeTrajectory(JOINTS, calibration, straight_up, 5.0, 6.0);
+    if (!arm->sendTrajectoryAndWait(traj)) {
+      RCLCPP_ERROR(arm->get_logger(), "Move 2 failed.");
+      rclcpp::shutdown();
+      return 1;
+    }
   }
+  RCLCPP_INFO(arm->get_logger(), "  Reached straight-up pose.");
 
-  // First, the joint names, which apply to all waypoints
-  trajectory.joint_names = joint_names_;
-
-  trajectory.points.resize(NUM_TRAJ_POINTS);
-
-  // trajectory point:
-  int ind = 0;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions = current_joint_state_;
-
-  // trajectory point:
-  ind++;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions = calibration_positions;
-
-  // trajectory point:
-  ind++;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions = straight_up_positions;
-
-  // trajectory point:
-  ind++;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions.resize(NUM_JOINTS);
-  trajectory.points[ind].positions = calibration_positions;
-
-  //  // all Velocities 0
-  //  for (size_t i = 0; i < NUM_TRAJ_POINTS; ++i)
-  //  {
-  //    trajectory.points[i].velocities.resize(NUM_JOINTS);
-  //    for (size_t j = 0; j < NUM_JOINTS; ++j)
-  //    {
-  //      trajectory.points[i].velocities[j] = 0.0;
-  //    }
-  //  }
-
-  control_msgs::JointTrajectoryGoal goal;
-  goal.trajectory = trajectory;
-  return goal;
-}
-
-//! Returns the current state of the action
-actionlib::SimpleClientGoalState Pr2JointTrajectoryClient::getState()
-{
-  return traj_client_.getState();
-}
-
-} /* namespace katana_tutorials */
-
-int main(int argc, char** argv)
-{
-  // Init the ROS node
-  ros::init(argc, argv, "pr2_joint_trajectory_client");
-
-  katana_tutorials::Pr2JointTrajectoryClient arm;
-  // Start the trajectory
-  arm.startTrajectory(arm.makeArmUpTrajectory());
-  // Wait for trajectory completion
-  while (!arm.getState().isDone() && ros::ok())
+  // Move 3: straight up → calibration
+  RCLCPP_INFO(arm->get_logger(), "Move 3/3: straight up → calibration pose");
   {
-    usleep(50000);
+    auto traj = katana_tutorials::makeTrajectory(JOINTS, straight_up, calibration, 5.0, 6.0);
+    if (!arm->sendTrajectoryAndWait(traj)) {
+      RCLCPP_ERROR(arm->get_logger(), "Move 3 failed.");
+      rclcpp::shutdown();
+      return 1;
+    }
   }
+  RCLCPP_INFO(arm->get_logger(), "  Sequence complete — arm back at calibration pose.");
+
+  rclcpp::shutdown();
+  return 0;
 }

@@ -1,22 +1,28 @@
 // =============================================================================
 // Tutorial 3: offset_inverse_kinematics.cpp
 // =============================================================================
-// ROS 2 port — Full 3D IK with DH-parameter link offsets
+// ROS 2 — Full 3D IK with DH-parameter link offsets for Katana 400 6M180
 //
 // WHAT IT DOES:
 //   Most complete IK version. Handles the real geometry of the Katana arm
 //   including a link offset (d) between joint 1 and the shoulder joint.
 //
 // IK MODEL (DH-parameter based):
-//   a2 = 35 cm, a3 = 25 cm, d1 = 0 (no offset for this arm variant)
+//   Link lengths from katana6M180.cfg [ENDEFFECTOR] (in cm):
+//     a2 = 19.10 cm  (segment2 = 191.0 mm — shoulder to elbow)
+//     a3 = 31.33 cm  (segment3 + segment4 = 313.3 mm — elbow to TCP)
+//     d  = 0.0       (no lateral offset for the 6M180 variant)
 //
 //   θ1 = atan2(y,x) + atan2(-sqrt(x²+y²-d²), d)
 //   θ3 = atan2(-sqrt(1-D²), D)       where D = (x²+y²+z²-d²-a2²-a3²)/(2·a2·a3)
 //   θ2 = atan2(z, sqrt(x²+y²-d²)) - atan2(a3·sin(θ3), a2+a3·cos(θ3))
 //
+// NOTE: For exact reachability validation use Tutorial 4 (ik_pose_mover) which
+//       calls KNI's own IKCalculate() with the full kinematic model.
+//
 // RUN:
 //   ros2 run katana_tutorials offset_inverse_kinematics
-//   Then type: X Y Z  (e.g.  20 10 15)
+//   Then type: X Y Z  (in cm, e.g.  15 10 10)
 // =============================================================================
 
 #include <cmath>
@@ -70,16 +76,19 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  const double a2 = 35.0;
-  const double a3 = 25.0;
-  const double d  = 0.0;  // link 1 offset — 0 for Katana 6M 180 variant
-  const double reach = a2 + a3;
+  // Katana 400 6M180 segment lengths (from katana6M180.cfg [ENDEFFECTOR], in cm)
+  //   segment2 = 191.0 mm              →  19.10 cm  (shoulder to elbow)
+  //   segment3 + segment4 = 313.3 mm   →  31.33 cm  (elbow to TCP)
+  const double a2 = 19.10;
+  const double a3 = 31.33;
+  const double d  = 0.0;   // lateral shoulder offset — 0 for the 6M180 variant
+  const double reach = a2 + a3;  // ≈ 50.4 cm
 
   // ── Read target from user ───────────────────────────────────────────────
   double x, y, z;
-  std::cout << "\nKatana Full 3D IK (with link offsets)\n";
-  std::cout << "Arm reach: " << reach << " cm\n";
-  std::cout << "Enter target X Y Z (in cm, e.g. 20 10 15): ";
+  std::cout << "\nKatana 400 6M180 — Full 3D IK (DH-parameter model with link offsets)\n";
+  std::cout << "Arm reach: " << reach << " cm  (a2=" << a2 << " cm, a3=" << a3 << " cm, d=" << d << ")\n";
+  std::cout << "Enter target X Y Z (in cm, e.g. 15 10 10): ";
   std::cin >> x >> y >> z;
 
   // ── Reachability check ───────────────────────────────────────────────────
@@ -89,7 +98,7 @@ int main(int argc, char ** argv)
     RCLCPP_WARN(arm->get_logger(),
       "Target out of reach (distance=%.1f cm, max=%.1f cm). Using safe default.",
       r3, reach);
-    x = 60.0; y = 0.0; z = 0.0;
+    x = 30.0; y = 0.0; z = 10.0;
   }
 
   // ── Solve IK ─────────────────────────────────────────────────────────────

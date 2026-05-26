@@ -1,205 +1,150 @@
-/*
- * follow_joint_trajectory_client.cpp
- *
- *  Created on: 06.11.2011
- *      Author: martin
- */
+// =============================================================================
+// Tutorial 6: test_inverse_kinematics.cpp
+// =============================================================================
+// ROS 2 — 2D Inverse Kinematics (planar, pan = 0) for the Katana 400 6M180.
+//
+// WHAT IT DOES:
+//   User types an X (forward), Y (up) target in the sagittal plane (pan = 0).
+//   The program solves the 2-link planar IK (law of cosines) and moves the arm.
+//
+// IK MODEL:
+//   Link lengths from katana6M180.cfg [ENDEFFECTOR] (in cm):
+//     a2 = 19.10 cm  (segment2 = 191.0 mm — shoulder to elbow)
+//     a3 = 31.33 cm  (segment3 + segment4 = 313.3 mm — elbow to TCP)
+//   Maximum reach ≈ 50.4 cm.
+//
+//   alpha = acos((a2²-a3²+x²+y²) / (2·a2·sqrt(x²+y²)))   shoulder angle
+//   beta  = acos((a2²+a3²-x²-y²) / (2·a2·a3))             elbow angle
+//   elev  = atan2(y, x)                                     elevation of target
+//
+//   motor1 (pan)      = 0   — arm always faces forward in this 2D model
+//   motor2 (shoulder) = elev + k·alpha
+//   motor3            = 0
+//   motor4 (elbow)    = k·(π - beta)
+//   motor5            = 0
+//
+//   For x < 0 (target behind): k = -1 (arm bends backward)
+//
+// REQUIRES:
+//   ros2_control driver running (real_hardware.launch.py or full_system.launch.py)
+//
+// RUN:
+//   ros2 run katana_tutorials test_inverse_kinematics
+//   Then type: X Y  (in cm, e.g.  20 10)
+// =============================================================================
 
-#include <katana_tutorials/follow_joint_trajectory_client.h>
-#include<iostream>
-#include<cmath>
+#include <cmath>
+#include <iostream>
+#include "rclcpp/rclcpp.hpp"
+#include "katana_tutorials/katana_arm_client.hpp"
 
-double beta_cal(double L1,double L2,double x,double y){
-        double beta = 0;
-        beta = std::acos((pow(L1,2) + std::pow(L2,2) - std::pow(x,2) - std::pow(y,2))/(2*L1*L2));
-        return beta;
-}
+// ---------------------------------------------------------------------------
+// 2-link planar IK helpers
+// ---------------------------------------------------------------------------
 
-double alpha_cal(double L1,double L2,double x,double y){
-        double alpha = 0;
-        alpha = std::acos((std::pow(L1,2) - std::pow(L2,2) + std::pow(x,2) + std::pow(y,2))/(2*L1*std::sqrt(pow(x,2) + std::pow(y,2))));
-        return alpha;
-}
-
-double final_point_angle(double x , double y){
-	double angle = 0,distance = 0;
-//	distance = std::sqrt(std::pow(x,2) + std::pow(y,2));
-	
-//	angle = y*(1/distance);
-
-	angle = std::atan2(y,x);
-	return angle;
-}
-
-
-namespace katana_tutorials
+/// Shoulder angle (alpha) — law of cosines, upper triangle
+static double alpha_cal(double a2, double a3, double x, double y)
 {
-
-FollowJointTrajectoryClient::FollowJointTrajectoryClient() :
-    traj_client_("/katana_arm_controller/follow_joint_trajectory", true), got_joint_state_(false), spinner_(1)
-{
-  joint_names_.push_back("katana_motor1_pan_joint");
-  joint_names_.push_back("katana_motor2_lift_joint");
-  joint_names_.push_back("katana_motor3_lift_joint");
-  joint_names_.push_back("katana_motor4_lift_joint");
-  joint_names_.push_back("katana_motor5_wrist_roll_joint");
-
-  joint_state_sub_ = nh_.subscribe("/joint_states", 1, &FollowJointTrajectoryClient::jointStateCB, this);
-  spinner_.start();
-
-  // wait for action server to come up
-  while (!traj_client_.waitForServer(ros::Duration(5.0)))
-  {
-    ROS_INFO("Waiting for the follow_joint_trajectory server");
-  }
+  double denom = 2.0 * a2 * std::sqrt(x * x + y * y);
+  if (std::abs(denom) < 1e-9) { return 0.0; }
+  double cos_val = (a2*a2 - a3*a3 + x*x + y*y) / denom;
+  cos_val = std::max(-1.0, std::min(1.0, cos_val));
+  return std::acos(cos_val);
 }
 
-FollowJointTrajectoryClient::~FollowJointTrajectoryClient()
+/// Elbow angle (beta) — law of cosines, full triangle
+static double beta_cal(double a2, double a3, double x, double y)
 {
+  double denom = 2.0 * a2 * a3;
+  if (std::abs(denom) < 1e-9) { return 0.0; }
+  double cos_val = (a2*a2 + a3*a3 - x*x - y*y) / denom;
+  cos_val = std::max(-1.0, std::min(1.0, cos_val));
+  return std::acos(cos_val);
 }
 
-void FollowJointTrajectoryClient::jointStateCB(const sensor_msgs::JointState::ConstPtr &msg)
+/// Elevation angle of the target point above horizontal
+static double elevAngle(double x, double y)
 {
-  std::vector<double> ordered_js;
-
-  ordered_js.resize(joint_names_.size());
-
-  for (size_t i = 0; i < joint_names_.size(); ++i)
-  {
-    bool found = false;
-    for (size_t j = 0; j < msg->name.size(); ++j)
-    {
-      if (joint_names_[i] == msg->name[j])
-      {
-        ordered_js[i] = msg->position[j];
-        found = true;
-        break;
-      }
-    }
-    if (!found)
-      return;
-  }
-
-  ROS_INFO_ONCE("Got joint state!");
-  current_joint_state_ = ordered_js;
-  got_joint_state_ = true;
+  return std::atan2(y, x);
 }
 
-//! Sends the command to start a given trajectory
-void FollowJointTrajectoryClient::startTrajectory(control_msgs::FollowJointTrajectoryGoal goal)
+// ---------------------------------------------------------------------------
+int main(int argc, char ** argv)
 {
-  // When to start the trajectory: 1s from now
-  goal.trajectory.header.stamp = ros::Time::now() + ros::Duration(1.0);
-  traj_client_.sendGoal(goal);
-}
+  rclcpp::init(argc, argv);
 
-control_msgs::FollowJointTrajectoryGoal FollowJointTrajectoryClient::makeArmUpTrajectory()
-{
- 
-  double L1 = 35,L2 = 25,x,y,k = 1, p = 1.57;
-  double beta_angle = 0, alpha_angle = 0 , finalPointAngle = 0;
-  std::cin >> x >> y;
-  if(x < 0){
-    k = -1;
-    p = 0;
-    
-   
-  }
-  if(x > L1 + L2 || y > L1 + L2 || std::sqrt(std::pow(x,2) + std::pow(y,2)) > L1+ L2){
-     x = 20;
-     y = 30;
+  auto arm = std::make_shared<katana_tutorials::KatanaArmClient>(
+    "test_inverse_kinematics");
 
-     std::cout << "Invalid coordinate,Please fill in new coordinate" <<  std::endl;
-    
-  }
-  beta_angle = beta_cal(L1,L2,x,y);
-  alpha_angle = alpha_cal(L1,L2,x,y);
-  finalPointAngle = final_point_angle(x,y);
-
-  const size_t NUM_TRAJ_POINTS = 3;
-  const size_t NUM_JOINTS = 5;
-
-  // positions after calibration
-  std::vector<double> calibration_positions(NUM_JOINTS);
-  calibration_positions[0] = 0.00;
-  calibration_positions[1] = finalPointAngle + k*(alpha_angle);
-  calibration_positions[2] = 0.00;
-  calibration_positions[3] = k*(3.14 - beta_angle);
-  calibration_positions[4] = 0.00;
-
-  // arm pointing straight up
-  std::vector<double> straight_up_positions(NUM_JOINTS);
-  straight_up_positions[0] = 0.0;
-  straight_up_positions[1] = 2.57;
-  straight_up_positions[2] = 0.0;
-  straight_up_positions[3] = 0.0;
-  straight_up_positions[4] = 0.0;
-
-  trajectory_msgs::JointTrajectory trajectory;
-
-  for (ros::Rate r = ros::Rate(10); !got_joint_state_; r.sleep())
-  {
-    ROS_DEBUG("waiting for joint state...");
-
-    if (!ros::ok())
-      exit(-1);
+  RCLCPP_INFO(arm->get_logger(), "Waiting for joint state...");
+  if (!arm->waitForJointState(15.0)) {
+    RCLCPP_FATAL(arm->get_logger(), "No joint state received — is the driver running?");
+    rclcpp::shutdown();
+    return 1;
   }
 
-  // First, the joint names, which apply to all waypoints
-  trajectory.joint_names = joint_names_;
+  // Katana 400 6M180 link lengths (cm)
+  const double a2    = 19.10;   // segment2 = 191.0 mm
+  const double a3    = 31.33;   // segment3 + segment4 = 313.3 mm
+  const double reach = a2 + a3; // ≈ 50.4 cm
 
-  trajectory.points.resize(NUM_TRAJ_POINTS);
-
-  // trajectory point:
-  int ind = 0;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions = current_joint_state_;
-
-  // trajectory point:
-  ind++;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions = calibration_positions;
-
-  // trajectory point:
-  ind++;
-  trajectory.points[ind].time_from_start = ros::Duration(5 * ind);
-  trajectory.points[ind].positions.resize(NUM_JOINTS);
-  trajectory.points[ind].positions = calibration_positions;
-
-  //  // all Velocities 0
-  //  for (size_t i = 0; i < NUM_TRAJ_POINTS; ++i)
-  //  {
-  //    trajectory.points[i].velocities.resize(NUM_JOINTS);
-  //    for (size_t j = 0; j < NUM_JOINTS; ++j)
-  //    {
-  //      trajectory.points[i].velocities[j] = 0.0;
-  //    }
-  //  }
-
-  control_msgs::FollowJointTrajectoryGoal goal;
-  goal.trajectory = trajectory;
-  return goal;
-}
-
-//! Returns the current state of the action
-actionlib::SimpleClientGoalState FollowJointTrajectoryClient::getState()
-{
-  return traj_client_.getState();
-}
-
-} /* namespace katana_tutorials */
-
-int main(int argc, char** argv)
-{
-  // Init the ROS node
-  ros::init(argc, argv, "follow_joint_trajectory_client");
-
-  katana_tutorials::FollowJointTrajectoryClient arm;
-  // Start the trajectory
-  arm.startTrajectory(arm.makeArmUpTrajectory());
-  // Wait for trajectory completion
-  while (!arm.getState().isDone() && ros::ok())
-  {
-    usleep(50000);
+  // ── Read target from user ─────────────────────────────────────────────────
+  double x, y;
+  std::cout << "\nKatana 400 6M180 — 2D Planar IK (pan = 0, arm faces forward)\n";
+  std::cout << "Arm reach: " << reach << " cm  (a2=" << a2 << ", a3=" << a3 << ")\n";
+  std::cout << "Enter target X Y (in cm, X=forward, Y=up, e.g.  20 10): ";
+  if (!(std::cin >> x >> y)) {
+    std::cerr << "  [!] Invalid input.\n";
+    rclcpp::shutdown();
+    return 1;
   }
+
+  // ── Reachability check ────────────────────────────────────────────────────
+  double dist = std::sqrt(x * x + y * y);
+  if (dist > reach) {
+    RCLCPP_WARN(arm->get_logger(),
+      "Target (%.1f, %.1f) cm is %.2f cm away — beyond reach of %.2f cm. "
+      "Using safe default (20, 10).", x, y, dist, reach);
+    x = 20.0;
+    y = 10.0;
+    dist = std::sqrt(x * x + y * y);
+  }
+
+  // ── Solve IK ──────────────────────────────────────────────────────────────
+  // For x < 0 the arm bends backward: k = -1
+  const double k    = (x < 0.0) ? -1.0 : 1.0;
+  const double elev  = elevAngle(x, y);
+  const double alpha = alpha_cal(a2, a3, x, y);
+  const double beta  = beta_cal(a2, a3, x, y);
+
+  std::vector<double> target_pos = {
+    0.0,                         // motor1 (pan)     — fixed at 0 for 2D model
+    elev + k * alpha,            // motor2 (shoulder)
+    0.0,                         // motor3            — not used
+    k * (M_PI - beta),           // motor4 (elbow)
+    0.0                          // motor5 (wrist roll) — not used
+  };
+
+  RCLCPP_INFO(arm->get_logger(),
+    "IK solution: elev=%.3f  alpha=%.3f  beta=%.3f  k=%.0f",
+    elev, alpha, beta, k);
+  RCLCPP_INFO(arm->get_logger(),
+    "Motor targets: [%.3f, %.3f, %.3f, %.3f, %.3f]",
+    target_pos[0], target_pos[1], target_pos[2], target_pos[3], target_pos[4]);
+
+  // ── Build and send trajectory ─────────────────────────────────────────────
+  auto current = arm->currentJointPositions();
+  auto traj    = katana_tutorials::makeTrajectory(
+    katana_tutorials::KatanaArmClient::ARM_JOINT_NAMES,
+    current, target_pos, 5.0, 6.0);
+
+  if (!arm->sendTrajectoryAndWait(traj)) {
+    RCLCPP_ERROR(arm->get_logger(), "Movement failed.");
+    rclcpp::shutdown();
+    return 1;
+  }
+
+  RCLCPP_INFO(arm->get_logger(), "Reached target position!");
+  rclcpp::shutdown();
+  return 0;
 }

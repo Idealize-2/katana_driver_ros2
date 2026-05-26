@@ -63,6 +63,12 @@ ros2_tutorial(sixR_inverse_kinematics)
 # Tutorial 3: Full 3D IK (with DH offsets) via ros2_control
 ros2_tutorial(offset_inverse_kinematics)
 
+# Tutorial 5: Multi-waypoint trajectory (current → calibration → straight_up → calibration)
+ros2_tutorial(pr2_joint_trajectory_client)
+
+# Tutorial 6: 2D planar IK (user enters X Y in cm, pan fixed at 0)
+ros2_tutorial(test_inverse_kinematics)
+
 # Tutorial 4: Calibrate → limp & observe → IK check → moveRobotTo (direct KNI)
 add_executable(ik_pose_mover src/ik_pose_mover.cpp)
 target_include_directories(ik_pose_mover PRIVATE ${KNI_INCLUDE_DIR})
@@ -79,6 +85,8 @@ install(TARGETS
   follow_joint_trajectory_client
   sixR_inverse_kinematics
   offset_inverse_kinematics
+  pr2_joint_trajectory_client
+  test_inverse_kinematics
   ik_pose_mover
   EXPORT export_${PROJECT_NAME}
   LIBRARY  DESTINATION lib
