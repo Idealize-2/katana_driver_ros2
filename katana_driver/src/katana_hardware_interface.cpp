@@ -216,7 +216,7 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
     }
 
     // Initial read — seed hw_commands from actual encoder positions so the
-    // first write cycle is a no-op (hold-in-place) rather than a jump to 0.
+    // first write cycle is a no-op (hold-in-placecmd) rather than a jump to 0.
     std::vector<int> encoders = katana_->getRobotEncoders(true);
     for (std::size_t i = 0; i < info_.joints.size(); ++i) {
       if (i < encoders.size()) {
@@ -346,6 +346,9 @@ hardware_interface::return_type KatanaHardwareInterface::write(
   if (!katana_) return hardware_interface::return_type::ERROR;
   std::lock_guard<std::mutex> lock(kni_mtx_);
   hw_cmd_cache_ = hw_commands_positions_;
+  RCLCPP_DEBUG(logger_, "write() updated hw_cmd_cache_ with new commands: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+               hw_cmd_cache_[0], hw_cmd_cache_[1], hw_cmd_cache_[2],
+               hw_cmd_cache_[3], hw_cmd_cache_[4], hw_cmd_cache_[5]);
   return hardware_interface::return_type::OK;
 }
 
@@ -441,6 +444,11 @@ void KatanaHardwareInterface::kni_loop()
       // ── 7. moreflag: 0 = chain next segment, 1 = stop here ────────────────
       bool is_last  = (kni_idle_count_ >= kIdleThresh);
       int  moreflag = is_last ? 1 : 0;
+      
+      // RCLCPP_INFO(logger_, "Holding position at target encoders [%d, %d, %d, %d, %d, %d]",
+      //     kni_target_enc_[0], kni_target_enc_[1], kni_target_enc_[2],
+      //     kni_target_enc_[3], kni_target_enc_[4], kni_target_enc_[5]);
+      RCLCPP_INFO(logger_, "  (idle_count=%d  moreflag=%d)", kni_idle_count_, moreflag);  
 
       // ── 8. Hermite cubic coefficients → sendSplineToMotor (~245 ms total) ──
       const double T  = static_cast<double>(kSplineT);

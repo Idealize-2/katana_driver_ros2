@@ -1,0 +1,1 @@
+ this thing maybe cause because of it failed to go to current goal and then it store the actual that encoder state and send cmd to return it and while kni_loop also doing the trajectory that moveit sended

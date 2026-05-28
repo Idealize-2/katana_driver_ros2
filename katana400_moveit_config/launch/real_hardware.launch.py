@@ -114,9 +114,9 @@ def launch_setup(context, *args, **kwargs):
         # Delay all spawners so the CM and pluginlib caches have time to
         # initialise before load_controller is called — prevents a JTC
         # on_init() segfault that occurs on fresh boot.
-        spawner('joint_state_broadcaster', delay=12.0),
-        spawner('arm_controller',          delay=12.0),
-        spawner('gripper_controller',      delay=12.0),
+        spawner('joint_state_broadcaster', delay=20.0),
+        spawner('arm_controller',          delay=20.0),
+        spawner('gripper_controller',      delay=20.0),
     ]
 
 
