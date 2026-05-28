@@ -16,8 +16,8 @@
           - katana_motor4_lift_joint
           - katana_motor5_wrist_roll_joint
       gripper_controller:
-        type: FollowJointTrajectory
-        action_ns: follow_joint_trajectory
+        type: GripperCommand
+        action_ns: gripper_cmd
         default: true
         joints:
           - katana_l_finger_joint

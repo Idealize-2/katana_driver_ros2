@@ -87,8 +87,11 @@ private:
   std::vector<double>      kni_last_vel_;
   std::vector<double>      kni_last_cmd_;
   int                      kni_idle_count_  = 0;
-  bool                     kni_hold_sent_   = false;
-  static constexpr int     kSplineT         = 40;  // 400 ms per segment
+  bool                     kni_hold_sent_    = false;
+  bool                     kni_gripper_open_ = true;
+  int                      gripper_open_enc_ = 30770;
+  int                      gripper_close_enc_= 12240;
+  static constexpr int     kSplineT          = 50;  // 500 ms per segment — buffer over worst-case 410ms loop
   static constexpr int     kIdleThresh      = 3;   // stable cycles → moreflag=1
   static constexpr int     kEncMargin       = 200; // ticks from firmware limit
 

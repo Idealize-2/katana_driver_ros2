@@ -51,6 +51,13 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_init(
       return hardware_interface::CallbackReturn::ERROR;
     }
 
+    gripper_open_enc_  = info_.hardware_parameters.count("gripper_open_enc")
+      ? std::stoi(info_.hardware_parameters.at("gripper_open_enc"))  : 30770;
+    gripper_close_enc_ = info_.hardware_parameters.count("gripper_close_enc")
+      ? std::stoi(info_.hardware_parameters.at("gripper_close_enc")) : 12240;
+    RCLCPP_INFO(logger_, "Gripper encoders: open=%d  close=%d",
+                gripper_open_enc_, gripper_close_enc_);
+
     if (info_.hardware_parameters.count("calibrate_on_startup")) {
       std::string raw = info_.hardware_parameters.at("calibrate_on_startup");
       // Accept "true","True","TRUE","1","yes" as truthy.
@@ -170,6 +177,7 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
     // 3. Create Katana Arm
     katana_ = std::make_unique<CLMBase>();
     katana_->create(config_file_.c_str(), protocol_.get());
+    katana_->setGripperParameters(true, gripper_open_enc_, gripper_close_enc_);
     RCLCPP_INFO(logger_, "Katana arm object created.");
 
     // 4. Cache joint info
@@ -251,6 +259,8 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
       kni_idle_count_ = kIdleThresh;  // first send will be moreflag=1 (hold)
       kni_target_enc_.assign(mc, 0);
       kni_ve_.assign(mc, 0.0);
+      if (mc > 5)
+        kni_gripper_open_ = (kni_last_enc_[5] > (gripper_open_enc_ + gripper_close_enc_) / 2);
     }
 
     // Launch background KNI worker.
@@ -477,13 +487,16 @@ void KatanaHardwareInterface::kni_loop()
       // sees the actual position advancing and declares success correctly.                                                                                                 
       // Only re-send when the target actually changes to avoid spamming the                                                                                                
       // controller (kni_last_enc_[5] is updated below after each fire).                                                                                                    
-      if (kni_target_enc_[5] != kni_last_enc_[5]) {                                                                                                                         
-        katana_->moveMotorToEnc(                                                                                                                                            
-          static_cast<short>(5),                                                                                                                                            
-          kni_target_enc_[5],                                                                                                                                               
-          /*waitUntilReached=*/false,                                                                                                                                       
-          /*encTolerance=*/100,                                                                                                                                             
-          /*waitTimeout=*/0);      
+      {
+        bool want_open = (kni_target_enc_[5] > (gripper_open_enc_ + gripper_close_enc_) / 2);
+        if (want_open != kni_gripper_open_) {
+          if (want_open)
+            katana_->openGripper(false);
+          else
+            katana_->closeGripper(false);
+          kni_gripper_open_ = want_open;
+        }
+      }
 
       // ── 9. Update KNI-thread state for next iteration ─────────────────────
       kni_last_enc_ = kni_target_enc_;
