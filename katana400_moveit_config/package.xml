@@ -26,6 +26,10 @@
   <depend>moveit_msgs</depend>
   <depend>tf2</depend>
 
+  <!-- Runtime-only deps for eef_marker.py -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+
   <!-- Runtime-only deps (launch files / config) -->
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>moveit_kinematics</exec_depend>

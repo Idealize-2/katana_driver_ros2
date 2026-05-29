@@ -82,6 +82,7 @@ private:
   std::atomic<bool>        kni_running_{false};
   std::thread              kni_thread_;
 
+
   // KNI-thread-only state (never touched by the CM thread)
   std::vector<int>         kni_last_enc_;
   std::vector<double>      kni_last_vel_;
@@ -89,8 +90,9 @@ private:
   int                      kni_idle_count_  = 0;
   bool                     kni_hold_sent_    = false;
   bool                     kni_gripper_open_ = true;
+  //change in urdf in moveit config ros2control
   int                      gripper_open_enc_ = 30770;
-  int                      gripper_close_enc_= 12240;
+  int                      gripper_close_enc_= 15000;
   static constexpr int     kSplineT          = 50;  // 500 ms per segment — buffer over worst-case 410ms loop
   static constexpr int     kIdleThresh      = 3;   // stable cycles → moreflag=1
   static constexpr int     kEncMargin       = 200; // ticks from firmware limit

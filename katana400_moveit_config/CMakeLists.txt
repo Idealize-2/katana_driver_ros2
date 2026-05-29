@@ -41,6 +41,10 @@ install(TARGETS moveit_pose_mover
 
 # ── Install config / launch / setup ───────────────────────────────────────────
 
+install(PROGRAMS scripts/eef_marker.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 
 install(DIRECTORY launch

@@ -54,7 +54,7 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_init(
     gripper_open_enc_  = info_.hardware_parameters.count("gripper_open_enc")
       ? std::stoi(info_.hardware_parameters.at("gripper_open_enc"))  : 30770;
     gripper_close_enc_ = info_.hardware_parameters.count("gripper_close_enc")
-      ? std::stoi(info_.hardware_parameters.at("gripper_close_enc")) : 12240;
+      ? std::stoi(info_.hardware_parameters.at("gripper_close_enc")) : 15000;
     RCLCPP_INFO(logger_, "Gripper encoders: open=%d  close=%d",
                 gripper_open_enc_, gripper_close_enc_);
 
