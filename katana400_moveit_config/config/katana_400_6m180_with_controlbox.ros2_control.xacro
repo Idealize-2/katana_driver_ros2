@@ -23,14 +23,12 @@
                          urdf_offset_katana_motor4_lift_joint:=2.9095
                          urdf_offset_katana_motor5_wrist_roll_joint:=0.9013
                          urdf_offset_katana_l_finger_joint:=0.7040
-                         urdf_offset_katana_r_finger_joint:=0.0
                          urdf_flip_katana_motor1_pan_joint:=-1.0
                          urdf_flip_katana_motor2_lift_joint:=-1.0
                          urdf_flip_katana_motor3_lift_joint:=-1.0
                          urdf_flip_katana_motor4_lift_joint:=-1.0
                          urdf_flip_katana_motor5_wrist_roll_joint:=-1.0
                          urdf_flip_katana_l_finger_joint:=0.3255
-                         urdf_flip_katana_r_finger_joint:=1.0
                          gripper_open_enc:=30770
                          gripper_close_enc:=18500">
         <xacro:property name="initial_positions" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
@@ -51,14 +49,12 @@
                 <param name="urdf_offset_katana_motor4_lift_joint">${urdf_offset_katana_motor4_lift_joint}</param>
                 <param name="urdf_offset_katana_motor5_wrist_roll_joint">${urdf_offset_katana_motor5_wrist_roll_joint}</param>
                 <param name="urdf_offset_katana_l_finger_joint">${urdf_offset_katana_l_finger_joint}</param>
-                <param name="urdf_offset_katana_r_finger_joint">${urdf_offset_katana_r_finger_joint}</param>
                 <param name="urdf_flip_katana_motor1_pan_joint">${urdf_flip_katana_motor1_pan_joint}</param>
                 <param name="urdf_flip_katana_motor2_lift_joint">${urdf_flip_katana_motor2_lift_joint}</param>
                 <param name="urdf_flip_katana_motor3_lift_joint">${urdf_flip_katana_motor3_lift_joint}</param>
                 <param name="urdf_flip_katana_motor4_lift_joint">${urdf_flip_katana_motor4_lift_joint}</param>
                 <param name="urdf_flip_katana_motor5_wrist_roll_joint">${urdf_flip_katana_motor5_wrist_roll_joint}</param>
                 <param name="urdf_flip_katana_l_finger_joint">${urdf_flip_katana_l_finger_joint}</param>
-                <param name="urdf_flip_katana_r_finger_joint">${urdf_flip_katana_r_finger_joint}</param>
                 <param name="gripper_open_enc">${gripper_open_enc}</param>
                 <param name="gripper_close_enc">${gripper_close_enc}</param>
             </hardware>
@@ -104,14 +100,6 @@
                 </state_interface>
                 <state_interface name="velocity"/>
             </joint>
-            <joint name="katana_r_finger_joint">
-                <command_interface name="position"/>
-                <state_interface name="position">
-                  <param name="initial_value">${initial_positions['katana_r_finger_joint']}</param>
-                </state_interface>
-                <state_interface name="velocity"/>
-            </joint>
-
         </ros2_control>
     </xacro:macro>
 </robot>

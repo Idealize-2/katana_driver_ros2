@@ -77,7 +77,7 @@ The older `katana` package (ROS 1 style, `KatanaNode.cpp`) **does not build** �
 - Three controllers spawned: `joint_state_broadcaster`, `arm_controller`, `gripper_controller`
 - Config: `katana400_moveit_config/config/ros2_controllers.yaml`
 - Update rate: **7 Hz** — `read()` and `write()` are instant mutex copies (< 1 µs); all KNI TCP I/O runs in a background thread
-- Spawners are delayed 5 s (`TimerAction`) to avoid a pluginlib cache segfault on fresh boot
+- Spawners are staggered (`TimerAction`): JSB=20 s, arm=22 s, gripper=35 s — order matters (see below)
 
 ### Async KNI worker thread
 
@@ -171,7 +171,7 @@ parameters=[
 
 ### real_hardware.launch.py design notes
 - Passes `robot_description` directly to `ros2_control_node` (avoids QoS mismatch with RSP's latched topic in Jazzy)
-- All spawners delayed 5 s via `TimerAction` (prevents JTC segfault from pluginlib cache race on fresh boot)
+- Spawners staggered: JSB 20 s, arm_controller 22 s, gripper_controller 35 s. Load order is critical: the deprecated `position_controllers/GripperActionController` corrupts CM/heap state during init, causing JTC `on_init()` to segfault at vtable offset `0xc8` when it loads afterwards. Increasing a uniform delay does not help; arm must load before gripper. See `problem/jtc_oninit_segfault_load_order.md`.
 
 ## Known build issues
 
@@ -183,7 +183,8 @@ parameters=[
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | `ros2_control_node` crashes: "no ros2_control tag found" | QoS mismatch reading `/robot_description` topic | Pass `robot_description` directly as Node parameter — already fixed in `real_hardware.launch.py` |
-| JTC segfault on fresh boot | pluginlib cache race condition | 5 s spawner delay — already fixed |
+| JTC segfault on fresh boot | pluginlib cache race condition | 20 s spawner baseline delay — already fixed |
+| `ros2_control_node` SIGSEGV in `JointTrajectoryController::on_init()` at `0xc8` after gripper loads | Deprecated `GripperActionController` corrupts CM state; JTC loads next and hits bad memory | Staggered spawner delays (arm=22 s before gripper=35 s) — already fixed. See `problem/jtc_oninit_segfault_load_order.md` |
 | `Returned 0 controllers in list` | `moveit_controllers.yaml` (flat format) not parsed by ROS 2 parameter loader | Use `move_group_params.yaml` (ROS 2 format) — already fixed. See `problem/moveit_0_controllers_in_list.md` |
 | `START_STATE_INVALID` — joint out of bounds | Real arm position slightly outside URDF limits | Expand limit in URDF (`katana_400_6m180.urdf.xacro`) and `joint_limits.yaml` |
 | RViz model doesn't match real arm | URDF offset/flip wrong | Re-derive offsets; update `.ros2_control.xacro` |

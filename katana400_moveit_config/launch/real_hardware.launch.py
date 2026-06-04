@@ -111,12 +111,13 @@ def launch_setup(context, *args, **kwargs):
     return [
         robot_state_publisher,
         controller_manager,
-        # Delay all spawners so the CM and pluginlib caches have time to
-        # initialise before load_controller is called — prevents a JTC
-        # on_init() segfault that occurs on fresh boot.
+        # Load order matters: the deprecated position_controllers/GripperActionController
+        # corrupts CM/heap state during init, causing JTC's on_init() to segfault at
+        # vtable offset 0xc8 when it loads afterwards.  arm_controller (JTC) must load
+        # before gripper_controller.  The 20 s baseline keeps the pluginlib cache warm.
         spawner('joint_state_broadcaster', delay=20.0),
-        spawner('arm_controller',          delay=20.0),
-        spawner('gripper_controller',      delay=20.0),
+        spawner('arm_controller',          delay=22.0),
+        spawner('gripper_controller',      delay=35.0),
     ]
 
 
