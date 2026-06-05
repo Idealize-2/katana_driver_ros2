@@ -23,7 +23,6 @@
       <xacro:katana_joint_interface name="katana_motor3_lift_joint" initial_pos="-2.207" />
       <xacro:katana_joint_interface name="katana_motor4_lift_joint" initial_pos="-2.026" />
       <xacro:katana_joint_interface name="katana_motor5_wrist_roll_joint" initial_pos="-2.990" />
-      <xacro:katana_joint_interface name="katana_r_finger_joint" initial_pos="0.3" />
       <xacro:katana_joint_interface name="katana_l_finger_joint" initial_pos="0.3" />
 
     </ros2_control>

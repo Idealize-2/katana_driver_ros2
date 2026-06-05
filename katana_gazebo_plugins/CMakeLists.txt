@@ -1,3 +1,9 @@
+# NOTE: This package is ROS 1 catkin code and is NOT built in this workspace.
+# The custom gripper Gazebo plugin it contained is superseded by the standard
+# ros2_control position_controllers/GripperActionController wired up in
+# katana_arm_gazebo/config/katana_controllers.yaml.
+# Kept for historical reference only — do not attempt to build.
+
 cmake_minimum_required(VERSION 2.8.3)
 project(katana_gazebo_plugins)
 
