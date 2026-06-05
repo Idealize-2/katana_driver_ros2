@@ -89,13 +89,14 @@ private:
   std::vector<double>      kni_last_cmd_;
   int                      kni_idle_count_  = 0;
   bool                     kni_hold_sent_    = false;
-  bool                     kni_gripper_open_ = true;
+  int                      kni_gripper_last_cmd_enc_ = -1;  // -1 = uninitialized, forces first send
   //change in urdf in moveit config ros2control
   int                      gripper_open_enc_ = 30770;
   int                      gripper_close_enc_= 15000;
   static constexpr int     kSplineT          = 50;  // 500 ms per segment — buffer over worst-case 410ms loop
   static constexpr int     kIdleThresh      = 3;   // stable cycles → moreflag=1
   static constexpr int     kEncMargin       = 200; // ticks from firmware limit
+  static constexpr int     kGripperDeadband = 50;  // enc ticks — avoids re-triggering firmware ramp on unchanged target
 
   // Pre-allocated work buffers — avoids per-cycle heap allocation in kni_loop()
   std::vector<int>         kni_target_enc_;

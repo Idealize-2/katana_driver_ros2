@@ -29,8 +29,8 @@
                          urdf_flip_katana_motor4_lift_joint:=-1.0
                          urdf_flip_katana_motor5_wrist_roll_joint:=-1.0
                          urdf_flip_katana_l_finger_joint:=0.3255
-                         gripper_open_enc:=30770
-                         gripper_close_enc:=18500">
+                         gripper_open_enc:=30000
+                         gripper_close_enc:=18000">
         <xacro:property name="initial_positions" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
 
         <ros2_control name="${name}" type="system">

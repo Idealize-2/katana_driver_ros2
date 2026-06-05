@@ -259,8 +259,7 @@ hardware_interface::CallbackReturn KatanaHardwareInterface::on_activate(
       kni_idle_count_ = kIdleThresh;  // first send will be moreflag=1 (hold)
       kni_target_enc_.assign(mc, 0);
       kni_ve_.assign(mc, 0.0);
-      if (mc > 5)
-        kni_gripper_open_ = (kni_last_enc_[5] > (gripper_open_enc_ + gripper_close_enc_) / 2);
+      kni_gripper_last_cmd_enc_ = -1;   // force first moveMotorToEnc on first loop iteration
     }
 
     // Launch background KNI worker.
@@ -411,6 +410,12 @@ void KatanaHardwareInterface::kni_loop()
                      std::min(joint_info_[i].enc_max - kEncMargin, e));
         kni_target_enc_[i] = e;
       }
+      // Apply user-configured gripper soft limits (gripper_open_enc / gripper_close_enc in xacro).
+      // Constrains moveMotorToEnc target without affecting the arm joint clamping above.
+      if (mc > 5) {
+        kni_target_enc_[5] = std::max(gripper_close_enc_,
+                                      std::min(gripper_open_enc_, kni_target_enc_[5]));
+      }
 
       // ── 5. Deadband / idle detection ───────────────────────────────────────
       bool changed = false;
@@ -430,13 +435,23 @@ void KatanaHardwareInterface::kni_loop()
       if (kni_hold_sent_) continue;
 
       // ── 6. Motor fault check (cached PVP) ─────────────────────────────────
+      // Only arm motors (0-4) gate the spline send; gripper stall is handled separately.
       bool fault = false;
-      for (int i = 0; i < mc; ++i) {
+      for (int i = 0; i < mc && i < 5; ++i) {
         short msf = motors->arr[i].GetPVP()->msf;
         if (msf == MSF_MOTCRASHED || msf == MSF_NOTVALID) {
           RCLCPP_WARN(logger_, "Motor %d fault (msf=%d) — skipping", i, (int)msf);
           fault = true;
           break;
+        }
+      }
+      // Gripper stall: clear fault and re-arm so the arm can keep moving.
+      if (mc > 5) {
+        short grip_msf = motors->arr[5].GetPVP()->msf;
+        if (grip_msf == MSF_MOTCRASHED) {
+          katana_->unBlock();
+          kni_gripper_last_cmd_enc_ = -1;
+          RCLCPP_DEBUG(logger_, "Gripper stall — unblocked, will re-send next cycle.");
         }
       }
       if (fault) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); continue; }
@@ -491,18 +506,15 @@ void KatanaHardwareInterface::kni_loop()
       }
       katana_->startSplineMovement(true /*exactflag*/, moreflag);
 
-      // Fire non-blocking; kni_loop encoder reads track its progress so JTC                                                                                                
-      // sees the actual position advancing and declares success correctly.                                                                                                 
-      // Only re-send when the target actually changes to avoid spamming the                                                                                                
-      // controller (kni_last_enc_[5] is updated below after each fire).                                                                                                    
+      // Exact-position gripper control: send moveMotorToEnc only when the target
+      // changes by more than the deadband to avoid re-triggering the firmware
+      // velocity ramp on every loop iteration.
       {
-        bool want_open = (kni_target_enc_[5] > (gripper_open_enc_ + gripper_close_enc_) / 2);
-        if (want_open != kni_gripper_open_) {
-          if (want_open)
-            katana_->openGripper(false);
-          else
-            katana_->closeGripper(false);
-          kni_gripper_open_ = want_open;
+        int grip_target = kni_target_enc_[5];
+        if (kni_gripper_last_cmd_enc_ < 0 ||
+            std::abs(grip_target - kni_gripper_last_cmd_enc_) > kGripperDeadband) {
+          katana_->moveMotorToEnc(static_cast<short>(5), grip_target, /*wait=*/false);
+          kni_gripper_last_cmd_enc_ = grip_target;
         }
       }
 
