@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+
+<robot xmlns:xacro="http://ros.org/wiki/xacro" 
+  name="katana400_mobile">
+  
+  <xacro:include filename="$(find mobile_base_description)/urdf/my_robot.urdf.xacro"/>
+  <xacro:include filename="$(find mobile_katana_description)/urdf/controlbox.urdf.xacro"/>
+  <xacro:include filename="$(find katana_description)/urdf/katana_400_6m180.urdf.xacro"/>
+
+</robot>
