@@ -1,0 +1,40 @@
+# ros2_control controller config — simulation (mock_components/GenericSystem)
+# Note: base_planar_joint is a MoveIt virtual joint (SRDF only) — not a URDF joint,
+#       so it cannot be managed by ros2_control. It has no controller here.
+#       For real hardware: add diff_drive_controller for the mobile base.
+controller_manager:
+  ros__parameters:
+    update_rate: 50
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    gripper_controller:
+      type: position_controllers/GripperActionController
+
+
+arm_controller:
+  ros__parameters:
+    joints:
+      - katana_motor1_pan_joint
+      - katana_motor2_lift_joint
+      - katana_motor3_lift_joint
+      - katana_motor4_lift_joint
+      - katana_motor5_wrist_roll_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    allow_nonzero_velocity_at_trajectory_end: true
+    constraints:
+      goal_time: 5.0
+
+gripper_controller:
+  ros__parameters:
+    joint: katana_l_finger_joint
+    allow_stalling: true
+    goal_tolerance: 0.05

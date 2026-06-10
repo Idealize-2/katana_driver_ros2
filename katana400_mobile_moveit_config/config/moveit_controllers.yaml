@@ -1,0 +1,23 @@
+moveit_simple_controller_manager:
+  controller_names:
+    - arm_controller
+    - gripper_controller
+
+arm_controller:
+  action_ns: follow_joint_trajectory
+  type: FollowJointTrajectory
+  default: true
+  joints:
+    - katana_motor1_pan_joint
+    - katana_motor2_lift_joint
+    - katana_motor3_lift_joint
+    - katana_motor4_lift_joint
+    - katana_motor5_wrist_roll_joint
+
+gripper_controller:
+  action_ns: gripper_cmd
+  type: GripperCommand
+  default: true
+  joints:
+    - katana_l_finger_joint
+    - katana_r_finger_joint

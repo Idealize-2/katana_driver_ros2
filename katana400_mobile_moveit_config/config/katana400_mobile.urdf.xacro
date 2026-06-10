@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="katana400_mobile">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+
+    <!-- Import katana400_mobile urdf file -->
+    <xacro:include filename="$(find mobile_katana_description)/urdf/katana400_mobile.urdf.xacro" />
+
+    <!-- Import control_xacro -->
+    <xacro:include filename="katana400_mobile.ros2_control.xacro" />
+
+
+    <xacro:katana400_mobile_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)"/>
+
+</robot>

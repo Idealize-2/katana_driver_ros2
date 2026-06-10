@@ -1,0 +1,25 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: mobile_katana_description
+    relative_path: urdf/katana400_mobile.urdf.xacro
+  srdf:
+    relative_path: config/katana400_mobile.srdf
+  package_settings:
+    author_name: kayz
+    author_email: tanatoy78@gmail.com
+    generated_timestamp: 1780913930
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
