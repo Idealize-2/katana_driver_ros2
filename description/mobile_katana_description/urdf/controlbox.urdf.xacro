@@ -17,7 +17,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 ${M_PI}" />
       <geometry>
-        <mesh filename="package://katana_description/meshes/katana/convex/katana_internal_controlbox_convex.stl" />
+        <mesh filename="package://katana_description/meshes/katana/katana_internal_controlbox.stl" />
       </geometry>
     </collision>
     <inertial>

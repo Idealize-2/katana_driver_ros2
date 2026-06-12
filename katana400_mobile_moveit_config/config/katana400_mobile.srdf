@@ -97,6 +97,8 @@
     <disable_collisions link1="katana_motor4_lift_link" link2="left_wheel_link" reason="Never"/>
     <disable_collisions link1="katana_motor4_lift_link" link2="right_wheel_link" reason="Never"/>
     <disable_collisions link1="katana_motor5_wrist_roll_link" link2="katana_r_finger_link" reason="Never"/>
+    <disable_collisions link1="katana_internal_controlbox_link" link2="mobile_base_link" reason="Adjacent"/>                                                                                  │
+│   <disable_collisions link1="katana_base_link" link2="katana_internal_controlbox_link" reason="Adjacent"/>
     <disable_collisions link1="left_wheel_link" link2="mobile_base_link" reason="Adjacent"/>
     <disable_collisions link1="left_wheel_link" link2="right_wheel_link" reason="Never"/>
     <disable_collisions link1="mobile_base_link" link2="right_wheel_link" reason="Adjacent"/>
