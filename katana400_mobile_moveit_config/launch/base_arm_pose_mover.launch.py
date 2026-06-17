@@ -1,7 +1,8 @@
 from moveit_configs_utils import MoveItConfigsBuilder
 from launch import LaunchDescription
 from launch_ros.actions import Node
-
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     moveit_config = (
@@ -20,7 +21,18 @@ def generate_launch_description():
             moveit_config.robot_description,
             moveit_config.robot_description_semantic,
             moveit_config.robot_description_kinematics,
+            {
+                "x": LaunchConfiguration('x'),
+                "y": LaunchConfiguration('y'),
+                "z": LaunchConfiguration('z'),
+            }
         ],
+        
     )
 
-    return LaunchDescription([base_arm_pose_mover])
+    return LaunchDescription([
+        DeclareLaunchArgument('x', default_value='0.5'),
+        DeclareLaunchArgument('y', default_value='0.5'),
+        DeclareLaunchArgument('z', default_value='0.4'),
+        base_arm_pose_mover,
+    ])

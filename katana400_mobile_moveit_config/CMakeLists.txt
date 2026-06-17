@@ -31,10 +31,11 @@ ament_target_dependencies(base_arm_pose_mover
   moveit_ros_planning_interface
   geometry_msgs
   moveit_msgs
+  
   tf2
 )
 
-ament_package()
+
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launch")
   install(
@@ -51,3 +52,4 @@ install(PROGRAMS scripts/eef_marker.py
 )
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 install(FILES .setup_assistant DESTINATION share/${PROJECT_NAME})
+ament_package()

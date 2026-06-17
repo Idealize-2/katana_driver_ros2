@@ -4,7 +4,6 @@ project(mobile_base_description)
 find_package(ament_cmake REQUIRED)
 
 install(DIRECTORY
-  rviz
   urdf
   DESTINATION share/${PROJECT_NAME}
 )
