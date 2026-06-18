@@ -1,3 +1,14 @@
+"""
+Gazebo Harmonic simulation launch for the Katana 400 6M180 on a mobile base.
+
+Usage:
+    ros2 launch katana400_mobile_moveit_config mobile_gazebo.launch.py
+    ros2 launch katana400_mobile_moveit_config mobile_gazebo.launch.py world:=/path/to/my.world
+
+Drive the base with:
+    ros2 topic pub --once /diff_drive_controller/cmd_vel geometry_msgs/msg/TwistStamped \
+        "{header: {frame_id: base_footprint}, twist: {linear: {x: 0.2}}}"
+"""
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -14,32 +25,32 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    pkg_katana_description = get_package_share_directory('katana_description')
-    pkg_katana_arm_gazebo  = get_package_share_directory('katana_arm_gazebo')
-    pkg_ros_gz_sim         = get_package_share_directory('ros_gz_sim')
+    pkg_katana_description        = get_package_share_directory('katana_description')
+    pkg_mobile_base_description   = get_package_share_directory('mobile_base_description')
+    pkg_mobile_katana_description = get_package_share_directory('mobile_katana_description')
+    pkg_katana_arm_gazebo         = get_package_share_directory('katana_arm_gazebo')
+    pkg_ros_gz_sim                = get_package_share_directory('ros_gz_sim')
 
-    # GZ_SIM_RESOURCE_PATH: parent of katana_description so Gazebo can find
-    # "katana_description/meshes/..." package:// URIs inside STL/DAE files.
-    gz_resource_path = os.path.dirname(pkg_katana_description)
+    # Gazebo must find mesh files via package:// URIs — add parent dirs to resource path.
+    gz_resource_path = ':'.join([
+        os.path.dirname(pkg_katana_description),
+        os.path.dirname(pkg_mobile_base_description),
+    ])
     existing = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
     full_resource_path = gz_resource_path + (':' + existing if existing else '')
 
-    # ── Launch arguments ────────────────────────────────────────────────────
     world_arg = DeclareLaunchArgument(
         'world',
         default_value=os.path.join(pkg_katana_arm_gazebo, 'worlds', 'grasp.world'),
         description='Path to the Gazebo world file',
     )
-    x_arg = DeclareLaunchArgument('x', default_value='0.0', description='Spawn X')
-    y_arg = DeclareLaunchArgument('y', default_value='0.0', description='Spawn Y')
-    z_arg = DeclareLaunchArgument('z', default_value='0.0', description='Spawn Z')
 
-    # ── Robot description (Gazebo URDF from katana_description) ─────────────
-    # Pass use_gazebo:=true so transmissions.urdf.xacro and gazebo.urdf.xacro
-    # are included (provides gz_ros2_control/GazeboSimSystem interface).
+    # use_gazebo:=true  → activates gz_ros2_control/GazeboSimSystem for arm + wheels
+    # use_gazebo_plugin:=false is the default in katana400_mobile.urdf.xacro so the arm's
+    #   own gazebo.urdf.xacro (arm-only plugin) is suppressed; the combined plugin lives in
+    #   mobile_katana_gazebo.urdf.xacro.
     xacro_file = os.path.join(
-        pkg_katana_description, 'urdf',
-        'katana_400_6m180_with_controlbox.urdf.xacro',
+        pkg_mobile_katana_description, 'urdf', 'katana400_mobile.urdf.xacro'
     )
     robot_description = {
         'robot_description': ParameterValue(
@@ -48,7 +59,6 @@ def generate_launch_description():
         )
     }
 
-    # ── Nodes ───────────────────────────────────────────────────────────────
     robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -68,17 +78,10 @@ def generate_launch_description():
     spawn_robot = Node(
         package='ros_gz_sim',
         executable='create',
-        arguments=[
-            '-name', 'katana',
-            '-topic', 'robot_description',
-            '-x', LaunchConfiguration('x'),
-            '-y', LaunchConfiguration('y'),
-            '-z', LaunchConfiguration('z'),
-        ],
+        arguments=['-name', 'katana_mobile', '-topic', 'robot_description', '-z', '0.15'],
         output='screen',
     )
 
-    # Clock bridge: Gazebo → ROS 2 (Harmonic uses gz.msgs.Clock)
     clock_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -86,7 +89,8 @@ def generate_launch_description():
         output='screen',
     )
 
-    # Controller spawners — staggered to let gz_ros2_control finish loading
+    # Staggered spawners — gz_ros2_control needs time to start the controller_manager.
+    # arm must load before gripper (GripperActionController heap-corruption issue).
     spawn_jsb = TimerAction(
         period=15.0,
         actions=[Node(
@@ -114,10 +118,28 @@ def generate_launch_description():
             output='screen',
         )],
     )
+    spawn_drive = TimerAction(
+        period=21.0,
+        actions=[Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['diff_drive_controller'],
+            output='screen',
+        )],
+    )
+
+    # Bridge node: translates MoveIt's FollowJointTrajectory for base_planar_joint
+    # into cmd_vel commands for the diff_drive_controller.
+    mobile_base_controller = Node(
+        package='katana400_mobile_moveit_config',
+        executable='mobile_base_controller.py',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
 
     return LaunchDescription([
         SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', full_resource_path),
-        world_arg, x_arg, y_arg, z_arg,
+        world_arg,
         robot_state_publisher,
         gz_sim,
         spawn_robot,
@@ -125,4 +147,6 @@ def generate_launch_description():
         spawn_jsb,
         spawn_arm,
         spawn_gripper,
+        spawn_drive,
+        mobile_base_controller,
     ])

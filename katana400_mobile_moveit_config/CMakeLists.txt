@@ -47,7 +47,9 @@ endif()
 install(TARGETS mobile_moveit_pose_mover base_arm_pose_mover
   DESTINATION lib/${PROJECT_NAME}
 )
-install(PROGRAMS scripts/eef_marker.py
+install(PROGRAMS
+  scripts/eef_marker.py
+  scripts/mobile_base_controller.py
   DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})

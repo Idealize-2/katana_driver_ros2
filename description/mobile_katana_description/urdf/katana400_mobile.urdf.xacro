@@ -1,10 +1,21 @@
 <?xml version="1.0"?>
 
-<robot xmlns:xacro="http://ros.org/wiki/xacro" 
+<robot xmlns:xacro="http://ros.org/wiki/xacro"
   name="katana400_mobile">
-  
+
+  <!-- Pass use_gazebo:=true to activate Gazebo simulation hardware interfaces.
+       use_gazebo_plugin is set false here so katana_400_6m180.urdf.xacro includes
+       only the ros2_control block (transmissions) without its own plugin declaration.
+       The single combined plugin is declared in mobile_katana_gazebo.urdf.xacro. -->
+  <xacro:arg name="use_gazebo" default="false"/>
+  <xacro:arg name="use_gazebo_plugin" default="false"/>
+
   <xacro:include filename="$(find mobile_base_description)/urdf/my_robot.urdf.xacro"/>
   <xacro:include filename="$(find mobile_katana_description)/urdf/controlbox.urdf.xacro"/>
   <xacro:include filename="$(find katana_description)/urdf/katana_400_6m180.urdf.xacro"/>
+
+  <xacro:if value="${'$(arg use_gazebo)' == 'true'}">
+    <xacro:include filename="$(find mobile_katana_description)/urdf/mobile_katana_gazebo.urdf.xacro"/>
+  </xacro:if>
 
 </robot>

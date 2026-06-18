@@ -91,6 +91,12 @@ int main(int argc, char** argv)
   } else {
     RCLCPP_ERROR(node->get_logger(), "OMPL failed to plan a path.");
   }
+  auto exec = mg.execute(plan);
+  if(exec == moveit::core::MoveItErrorCode::SUCCESS) {
+    RCLCPP_INFO(node->get_logger(), "Execution successful!");
+  } else {
+    RCLCPP_ERROR(node->get_logger(), "Execution failed.");
+  }
 
   rclcpp::shutdown();
   spinner_thread.join();

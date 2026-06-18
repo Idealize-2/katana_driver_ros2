@@ -118,4 +118,28 @@
         <origin xyz="${base_length / 3.0} 0 ${-wheel_radius / 2.0}" rpy="0 0 0" />
     </joint>
 
+    <!-- Drive wheels: high friction so they grip the ground instead of slipping -->
+    <gazebo reference="right_wheel_link">
+        <mu1>10.0</mu1>
+        <mu2>10.0</mu2>
+        <kp>1.0e6</kp>
+        <kd>1.0</kd>
+        <minDepth>0.001</minDepth>
+        <maxVel>0.01</maxVel>
+    </gazebo>
+    <gazebo reference="left_wheel_link">
+        <mu1>10.0</mu1>
+        <mu2>10.0</mu2>
+        <kp>1.0e6</kp>
+        <kd>1.0</kd>
+        <minDepth>0.001</minDepth>
+        <maxVel>0.01</maxVel>
+    </gazebo>
+
+    <!-- Caster: near-zero friction so it pivots freely without fighting the drive wheels -->
+    <gazebo reference="caster_wheel_link">
+        <mu1>0.001</mu1>
+        <mu2>0.001</mu2>
+    </gazebo>
+
 </robot>

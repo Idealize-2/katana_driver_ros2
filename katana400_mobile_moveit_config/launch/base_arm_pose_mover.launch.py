@@ -25,14 +25,16 @@ def generate_launch_description():
                 "x": LaunchConfiguration('x'),
                 "y": LaunchConfiguration('y'),
                 "z": LaunchConfiguration('z'),
+                "use_sim_time": LaunchConfiguration('use_sim_time'),
             }
         ],
-        
     )
 
     return LaunchDescription([
         DeclareLaunchArgument('x', default_value='0.5'),
         DeclareLaunchArgument('y', default_value='0.5'),
         DeclareLaunchArgument('z', default_value='0.4'),
+        DeclareLaunchArgument('use_sim_time', default_value='false',
+                              description='Set true when running with Gazebo'),
         base_arm_pose_mover,
     ])

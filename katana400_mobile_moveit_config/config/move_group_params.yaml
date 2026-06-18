@@ -5,12 +5,14 @@
       allowed_execution_duration_scaling: 3.0  # Multiplies expected execution time by 3
       allowed_goal_duration_margin: 3.0        # Adds a flat 3 second buffer at the end
       allowed_start_tolerance: 0.01            # Prevents immediate aborts if the arm jitters
+      control_multi_dof_joint_variables: true  # Flatten base_planar_joint x/y/theta into JointTrajectory so FollowJointTrajectory controllers can receive them
       
     moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
     moveit_simple_controller_manager:
       controller_names:
         - arm_controller
         - gripper_controller
+        - base_controller
       arm_controller:
         type: FollowJointTrajectory
         action_ns: follow_joint_trajectory
@@ -28,3 +30,11 @@
         joints:
           - katana_l_finger_joint
           - katana_r_finger_joint
+      base_controller:
+        type: FollowJointTrajectory
+        action_ns: follow_joint_trajectory
+        default: true
+        joints:
+          - base_planar_joint/x
+          - base_planar_joint/y
+          - base_planar_joint/theta

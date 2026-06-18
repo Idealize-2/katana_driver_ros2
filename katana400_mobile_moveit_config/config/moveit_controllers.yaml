@@ -2,6 +2,7 @@ moveit_simple_controller_manager:
   controller_names:
     - arm_controller
     - gripper_controller
+    - base_controller
 
 arm_controller:
   action_ns: follow_joint_trajectory
@@ -21,3 +22,12 @@ gripper_controller:
   joints:
     - katana_l_finger_joint
     - katana_r_finger_joint
+
+base_controller:
+  action_ns: follow_joint_trajectory
+  type: FollowJointTrajectory
+  default: true
+  joints:
+    - base_planar_joint/x
+    - base_planar_joint/y
+    - base_planar_joint/theta

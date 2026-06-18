@@ -4,9 +4,14 @@
   name="katana_400_6m180">
 
   <xacro:arg name="use_gazebo" default="false"/>
+  <!-- use_gazebo_plugin: set false when another URDF provides the GazeboSimROS2ControlPlugin
+       (e.g. the combined mobile+arm setup which needs a single plugin for all joints). -->
+  <xacro:arg name="use_gazebo_plugin" default="true"/>
   <xacro:if value="${'$(arg use_gazebo)' == 'true'}">
     <xacro:include filename="$(find katana_description)/urdf/transmissions.urdf.xacro"/>
-    <xacro:include filename="$(find katana_description)/urdf/gazebo.urdf.xacro"/>
+    <xacro:if value="${'$(arg use_gazebo_plugin)' == 'true'}">
+      <xacro:include filename="$(find katana_description)/urdf/gazebo.urdf.xacro"/>
+    </xacro:if>
   </xacro:if>
 
   <xacro:property name="M_PI" value="3.1415926535897931" />
