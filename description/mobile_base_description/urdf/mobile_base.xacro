@@ -92,6 +92,32 @@
         </inertial>
     </link>
 
+    <link name="rear_caster_wheel_link">
+        <visual>
+            <geometry>
+                <sphere radius="${wheel_radius / 2.0}" />
+            </geometry>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <material name="grey" />
+        </visual>
+        <collision>
+            <geometry>
+                <sphere radius="${wheel_radius / 2.0}" />
+            </geometry>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+        </collision>
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <mass value="0.1" />
+            <inertia
+                ixx="${(2/5.0) * 0.1 * (wheel_radius / 2.0)**2}"
+                ixy="0" ixz="0"
+                iyy="${(2/5.0) * 0.1 * (wheel_radius / 2.0)**2}"
+                iyz="0"
+                izz="${(2/5.0) * 0.1 * (wheel_radius / 2.0)**2}" />
+        </inertial>
+    </link>
+
     <joint name="base_joint" type="fixed">
         <parent link="base_footprint" />
         <child link="mobile_base_link" />
@@ -101,14 +127,14 @@
     <joint name="base_right_wheel_joint" type="continuous">
         <parent link="mobile_base_link" />
         <child link="right_wheel_link" />
-        <origin xyz="${-base_length / 4.0} ${-(base_width + wheel_length) / 2.0} 0" rpy="0 0 0" />
+        <origin xyz="0 ${-(base_width + wheel_length) / 2.0} 0" rpy="0 0 0" />
         <axis xyz="0 1 0" />
     </joint>
 
     <joint name="base_left_wheel_joint" type="continuous">
         <parent link="mobile_base_link" />
         <child link="left_wheel_link" />
-        <origin xyz="${-base_length / 4.0} ${(base_width + wheel_length) / 2.0} 0" rpy="0 0 0" />
+        <origin xyz="0 ${(base_width + wheel_length) / 2.0} 0" rpy="0 0 0" />
         <axis xyz="0 1 0" />
     </joint>
 
@@ -116,6 +142,12 @@
         <parent link="mobile_base_link" />
         <child link="caster_wheel_link" />
         <origin xyz="${base_length / 3.0} 0 ${-wheel_radius / 2.0}" rpy="0 0 0" />
+    </joint>
+
+    <joint name="base_rear_caster_wheel_joint" type="fixed">
+        <parent link="mobile_base_link" />
+        <child link="rear_caster_wheel_link" />
+        <origin xyz="${-base_length / 3.0} 0 ${-wheel_radius / 2.0}" rpy="0 0 0" />
     </joint>
 
     <!-- Drive wheels: high friction so they grip the ground instead of slipping -->
@@ -136,8 +168,12 @@
         <maxVel>0.01</maxVel>
     </gazebo>
 
-    <!-- Caster: near-zero friction so it pivots freely without fighting the drive wheels -->
+    <!-- Casters: near-zero friction so they pivot freely without fighting the drive wheels -->
     <gazebo reference="caster_wheel_link">
+        <mu1>0.001</mu1>
+        <mu2>0.001</mu2>
+    </gazebo>
+    <gazebo reference="rear_caster_wheel_link">
         <mu1>0.001</mu1>
         <mu2>0.001</mu2>
     </gazebo>

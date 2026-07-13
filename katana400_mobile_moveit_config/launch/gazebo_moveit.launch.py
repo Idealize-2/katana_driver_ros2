@@ -18,7 +18,6 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
-from moveit_configs_utils.launches import generate_static_virtual_joint_tfs_launch
 
 
 def generate_launch_description():
@@ -73,15 +72,9 @@ def generate_launch_description():
         parameters=[moveit_config.to_dict(), {'use_sim_time': True}],
     )
 
-    # Publishes static odom→base_footprint at (0,0,0) so MoveIt has an initial
-    # base_planar_joint value immediately. Once diff_drive_controller starts the
-    # dynamic odom TF takes over (more recent transforms win in TF2).
-    static_virtual_joint_tfs = generate_static_virtual_joint_tfs_launch(moveit_config)
-
     return LaunchDescription([
         world_arg,
         gazebo_launch,
-        static_virtual_joint_tfs,
         move_group_node,
         rviz_node,
     ])

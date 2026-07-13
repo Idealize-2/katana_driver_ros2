@@ -1,25 +1,29 @@
 #!/usr/bin/env python3
 """
-Bridge: MoveIt FollowJointTrajectory → diff_drive_controller cmd_vel.
+Bridge: MoveIt FollowJointTrajectory → Nav2 NavigateThroughPoses.
 
-MoveIt plans for base_planar_joint (virtual planar joint, SRDF) and sends
-FollowJointTrajectory goals containing the 3 variable names:
-  joint_names = ['base_planar_joint/x', 'base_planar_joint/y', 'base_planar_joint/theta']
+Forwards all MoveIt trajectory waypoints (base_planar_joint/x,y,theta) to Nav2's
+NavigateThroughPoses action. Nav2 passes through intermediate poses and stops
+precisely at the final one using the RPP controller with odom feedback.
 
-This node converts those waypoints into TwistStamped cmd_vel commands, using the
-odom→base_footprint TF for closed-loop feedback.
+Architecture:
+  MoveIt → FollowJointTrajectory (base_planar_joint/x,y,theta)
+         → mobile_base_controller (this node)
+         → NavigateThroughPoses → Nav2 (RPP, odom frame)
+         → /diff_drive_controller/cmd_vel (TwistStamped)
 """
 import math
-import time
+import threading
 
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionServer, GoalResponse, CancelResponse
+from rclpy.action import ActionServer, ActionClient, GoalResponse, CancelResponse
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 
 from control_msgs.action import FollowJointTrajectory
-from geometry_msgs.msg import TwistStamped
+from nav2_msgs.action import NavigateThroughPoses
+from geometry_msgs.msg import PoseStamped, Quaternion
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 
 
@@ -29,9 +33,11 @@ def _yaw_from_quat(q):
     return math.atan2(siny_cosp, cosy_cosp)
 
 
-def _angle_diff(a, b):
-    """Signed difference (a − b) wrapped to [−π, π]."""
-    return math.atan2(math.sin(a - b), math.cos(a - b))
+def _yaw_to_quat(yaw):
+    q = Quaternion()
+    q.z = math.sin(yaw / 2.0)
+    q.w = math.cos(yaw / 2.0)
+    return q
 
 
 class MobileBaseController(Node):
@@ -48,21 +54,14 @@ class MobileBaseController(Node):
             cancel_callback=self.cancel_callback,
             callback_group=cb_group,
         )
-        self._cmd_vel_pub = self.create_publisher(
-            TwistStamped, '/diff_drive_controller/cmd_vel', 10)
+        self._nav2_client = ActionClient(
+            self, NavigateThroughPoses, '/navigate_through_poses',
+            callback_group=cb_group,
+        )
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
-        self.declare_parameter('goal_tolerance_xy',    0.05)   # m
-        self.declare_parameter('goal_tolerance_theta', 0.15)   # rad (~8.6 deg)
-        self.declare_parameter('kp_linear',  0.6)
-        self.declare_parameter('kp_angular', 1.2)
-        self.declare_parameter('max_linear_vel',  0.6)         # m/s
-        self.declare_parameter('max_angular_vel', 1.0)         # rad/s
-        self.declare_parameter('min_angular_vel', 0.1)        # rad/s — minimum to break static friction
-        self.declare_parameter('control_rate_hz', 20.0)
-
-        self.get_logger().info('MobileBaseController ready on /base_controller/follow_joint_trajectory')
+        self.get_logger().info('MobileBaseController ready (Nav2 path-following mode)')
 
     def goal_callback(self, _goal):
         return GoalResponse.ACCEPT
@@ -71,102 +70,109 @@ class MobileBaseController(Node):
         return CancelResponse.ACCEPT
 
     def _get_pose(self):
-        """Return (x, y, theta) from odom→base_footprint TF, or None if unavailable."""
         try:
-            t = self._tf_buffer.lookup_transform(
-                'odom', 'base_footprint', rclpy.time.Time())
-            x = t.transform.translation.x
-            y = t.transform.translation.y
-            theta = _yaw_from_quat(t.transform.rotation)
-            return x, y, theta
+            t = self._tf_buffer.lookup_transform('odom', 'base_footprint', rclpy.time.Time())
+            return (t.transform.translation.x,
+                    t.transform.translation.y,
+                    _yaw_from_quat(t.transform.rotation))
         except (LookupException, ConnectivityException, ExtrapolationException):
             return None
 
     def execute_callback(self, goal_handle):
-        traj   = goal_handle.request.trajectory
+        traj = goal_handle.request.trajectory
         jnames = list(traj.joint_names)
         self.get_logger().info(
             f'Base goal: {len(traj.points)} waypoints, joints={jnames}')
 
-        # Empty trajectory = MoveIt contacting all controllers for a plan that doesn't
-        # involve the base (e.g. arm-only execution). Succeed immediately as a no-op.
         if not jnames or not traj.points:
             goal_handle.succeed()
             result = FollowJointTrajectory.Result()
             result.error_code = FollowJointTrajectory.Result.SUCCESSFUL
             return result
 
-        # MoveIt encodes a planar joint's 3 DOF as separate variable names.
         try:
             ix = jnames.index('base_planar_joint/x')
             iy = jnames.index('base_planar_joint/y')
             it = jnames.index('base_planar_joint/theta')
         except ValueError:
-            self.get_logger().error(
-                f'Expected base_planar_joint/x|y|theta in joint_names; got: {jnames}')
+            self.get_logger().error(f'Unexpected joint names: {jnames}')
             goal_handle.abort()
             return FollowJointTrajectory.Result()
 
-        tol_xy  = self.get_parameter('goal_tolerance_xy').value
-        tol_t   = self.get_parameter('goal_tolerance_theta').value
-        kp_l    = self.get_parameter('kp_linear').value
-        kp_a    = self.get_parameter('kp_angular').value
-        max_l   = self.get_parameter('max_linear_vel').value
-        max_a   = self.get_parameter('max_angular_vel').value
-        dt      = 1.0 / self.get_parameter('control_rate_hz').value
+        # Downsample: every 3rd point keeps ~65 waypoints from 195; always include last.
+        step = 3
+        sampled = list(range(0, len(traj.points), step))
+        if (len(traj.points) - 1) not in sampled:
+            sampled.append(len(traj.points) - 1)
 
-        for point in traj.points:
-            tx = point.positions[ix]
-            ty = point.positions[iy]
-            tt = point.positions[it]
+        now = self.get_clock().now().to_msg()
+        poses = []
+        for i in sampled:
+            pt = traj.points[i]
+            ps = PoseStamped()
+            ps.header.frame_id = 'odom'
+            ps.header.stamp = now
+            ps.pose.position.x = pt.positions[ix]
+            ps.pose.position.y = pt.positions[iy]
+            ps.pose.orientation = _yaw_to_quat(pt.positions[it])
+            poses.append(ps)
 
-            while rclpy.ok():
-                if goal_handle.is_cancel_requested:
-                    self._stop()
-                    goal_handle.canceled()
-                    return FollowJointTrajectory.Result()
+        final = traj.points[-1]
+        gx = final.positions[ix]
+        gy = final.positions[iy]
+        gt = final.positions[it]
 
-                pose = self._get_pose()
-                if pose is None:
-                    time.sleep(dt)
-                    continue
+        self.get_logger().info(
+            f'Forwarding {len(poses)}/{len(traj.points)} waypoints to Nav2, '
+            f'final=({gx:.3f}, {gy:.3f}, {math.degrees(gt):.1f}°)')
 
-                cx, cy, ct = pose
-                dx    = tx - cx
-                dy    = ty - cy
-                dist  = math.hypot(dx, dy)
-                dhead = _angle_diff(math.atan2(dy, dx), ct)   # heading toward goal
-                dfin  = _angle_diff(tt, ct)                   # final orientation error
+        if not self._nav2_client.wait_for_server(timeout_sec=15.0):
+            self.get_logger().error('Nav2 /navigate_through_poses not available after 15s')
+            goal_handle.abort()
+            return FollowJointTrajectory.Result()
 
-                if dist < tol_xy and abs(dfin) < tol_t:
-                    break
+        nav_goal = NavigateThroughPoses.Goal()
+        nav_goal.poses = poses
 
-                cmd = TwistStamped()
-                cmd.header.frame_id = 'base_footprint'
-                cmd.header.stamp = self.get_clock().now().to_msg()
-                if dist > tol_xy:
-                    cmd.twist.linear.x  = max(-max_l, min(max_l, kp_l * dist * math.cos(dhead)))
-                    cmd.twist.angular.z = max(-max_a, min(max_a, kp_a * dhead))
-                else:
-                    cmd.twist.angular.z = max(-max_a, min(max_a, kp_a * dfin))
+        done = threading.Event()
+        nav2_gh_holder = [None]
+        nav2_result = [None]
 
-                self.get_logger().info(
-                    f'pose=({cx:.2f},{cy:.2f},{math.degrees(ct):.1f}°) '
-                    f'target=({tx:.2f},{ty:.2f},{math.degrees(tt):.1f}°) '
-                    f'dist={dist:.3f} dhead={math.degrees(dhead):.1f}° dfin={math.degrees(dfin):.1f}° '
-                    f'→ lin={cmd.twist.linear.x:.3f} ang={cmd.twist.angular.z:.3f}'
-                )
-                self._cmd_vel_pub.publish(cmd)
-                time.sleep(dt)  # wall-clock rate (feedback-based so timing imprecision is fine)
+        def on_goal_response(future):
+            gh = future.result()
+            nav2_gh_holder[0] = gh
+            if not gh.accepted:
+                self.get_logger().error('Nav2 rejected the goal')
+                done.set()
+                return
+            gh.get_result_async().add_done_callback(on_result)
 
-        self._stop()
+        def on_result(future):
+            nav2_result[0] = future.result()
+            done.set()
+
+        self._nav2_client.send_goal_async(nav_goal).add_done_callback(on_goal_response)
+
+        while not done.wait(timeout=0.5):
+            if goal_handle.is_cancel_requested:
+                self.get_logger().info('Cancel requested — cancelling Nav2 goal')
+                nav2_gh = nav2_gh_holder[0]
+                if nav2_gh:
+                    nav2_gh.cancel_goal_async()
+                done.wait(timeout=3.0)
+                goal_handle.canceled()
+                return FollowJointTrajectory.Result()
+
+        pose = self._get_pose()
+        if pose:
+            self.get_logger().info(
+                f'Nav2 done. final=({pose[0]:.3f}, {pose[1]:.3f}, {math.degrees(pose[2]):.1f}°)'
+                f' target=({gx:.3f}, {gy:.3f}, {math.degrees(gt):.1f}°)')
+
         goal_handle.succeed()
         result = FollowJointTrajectory.Result()
         result.error_code = FollowJointTrajectory.Result.SUCCESSFUL
         return result
-
-    def _stop(self):
-        self._cmd_vel_pub.publish(TwistStamped())
 
 
 def main(args=None):

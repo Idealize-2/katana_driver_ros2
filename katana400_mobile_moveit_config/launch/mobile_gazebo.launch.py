@@ -30,6 +30,7 @@ def generate_launch_description():
     pkg_mobile_katana_description = get_package_share_directory('mobile_katana_description')
     pkg_katana_arm_gazebo         = get_package_share_directory('katana_arm_gazebo')
     pkg_ros_gz_sim                = get_package_share_directory('ros_gz_sim')
+    pkg_mobile_moveit_config      = get_package_share_directory('katana400_mobile_moveit_config')
 
     # Gazebo must find mesh files via package:// URIs — add parent dirs to resource path.
     gz_resource_path = ':'.join([
@@ -78,7 +79,7 @@ def generate_launch_description():
     spawn_robot = Node(
         package='ros_gz_sim',
         executable='create',
-        arguments=['-name', 'katana_mobile', '-topic', 'robot_description', '-z', '0.15'],
+        arguments=['-name', 'katana_mobile', '-topic', 'robot_description', 'z', '0'],
         output='screen',
     )
 
@@ -128,13 +129,69 @@ def generate_launch_description():
         )],
     )
 
-    # Bridge node: translates MoveIt's FollowJointTrajectory for base_planar_joint
-    # into cmd_vel commands for the diff_drive_controller.
+    nav2_params = os.path.join(pkg_mobile_moveit_config, 'config', 'nav2_params.yaml')
+
+    # Bridge node: MoveIt FollowJointTrajectory → Nav2 NavigateToPose pass-through.
+    # Nav2 handles closed-loop odom correction; this node just extracts the final goal.
     mobile_base_controller = Node(
         package='katana400_mobile_moveit_config',
         executable='mobile_base_controller.py',
         output='screen',
         parameters=[{'use_sim_time': True}],
+    )
+
+    # Nav2 nodes — start after diff_drive_controller is up and publishing odom TF (t=21s).
+    # lifecycle_manager activates the other three automatically (autostart: true).
+    # controller_server remapped: /cmd_vel → /diff_drive_controller/cmd_vel (TwistStamped).
+    nav2_nodes = TimerAction(
+        period=25.0,
+        actions=[
+            Node(
+                package='nav2_planner',
+                executable='planner_server',
+                name='planner_server',
+                output='screen',
+                parameters=[nav2_params],
+                remappings=[('/odom', '/diff_drive_controller/odom')],
+            ),
+            Node(
+                package='nav2_controller',
+                executable='controller_server',
+                name='controller_server',
+                output='screen',
+                parameters=[nav2_params],
+                remappings=[
+                    ('/odom', '/diff_drive_controller/odom'),
+                    ('/cmd_vel', '/diff_drive_controller/cmd_vel'),
+                ],
+            ),
+            Node(
+                package='nav2_behaviors',
+                executable='behavior_server',
+                name='behavior_server',
+                output='screen',
+                parameters=[nav2_params],
+                remappings=[
+                    ('/odom', '/diff_drive_controller/odom'),
+                    ('/cmd_vel', '/diff_drive_controller/cmd_vel'),
+                ],
+            ),
+            Node(
+                package='nav2_bt_navigator',
+                executable='bt_navigator',
+                name='bt_navigator',
+                output='screen',
+                parameters=[nav2_params],
+                remappings=[('/odom', '/diff_drive_controller/odom')],
+            ),
+            Node(
+                package='nav2_lifecycle_manager',
+                executable='lifecycle_manager',
+                name='lifecycle_manager_navigation',
+                output='screen',
+                parameters=[nav2_params],
+            ),
+        ],
     )
 
     return LaunchDescription([
@@ -149,4 +206,5 @@ def generate_launch_description():
         spawn_gripper,
         spawn_drive,
         mobile_base_controller,
+        nav2_nodes,
     ])
