@@ -2,7 +2,6 @@
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/robot_state/robot_state.hpp>
 #include <geometry_msgs/msg/pose.hpp>
-#include <cmath> 
 
 int main(int argc, char** argv)
 {
@@ -28,16 +27,10 @@ int main(int argc, char** argv)
 
   RCLCPP_INFO(node->get_logger(), "Target Pose: X=%f, Y=%f, Z=%f", target_x, target_y, target_z);
 
-  // 2. PERFECT DIFF-DRIVE PARKING MATH
-  double ideal_arm_reach = 0.50; // Stop 50cm away
-
-  // Calculate the angle from the robot (0,0) directly to the cup
-  double angle_to_target = std::atan2(target_y, target_x);
-
-  // Back up exactly 50cm from the cup along that angle line
-  double base_park_x = target_x - (ideal_arm_reach * std::cos(angle_to_target));
-  double base_park_y = target_y - (ideal_arm_reach * std::sin(angle_to_target));
-  double base_park_yaw = angle_to_target; // Face the cup directly
+  // 2. BASE POSE IS GIVEN DIRECTLY (no atan2 auto-parking)
+  double base_park_x = node->get_parameter("pos_x").as_double();
+  double base_park_y = node->get_parameter("pos_y").as_double();
+  double base_park_yaw = node->get_parameter("heading").as_double();
 
   // Setup MoveGroup using the combined group from your SRDF
   moveit::planning_interface::MoveGroupInterface mg(node, "base_arm");
