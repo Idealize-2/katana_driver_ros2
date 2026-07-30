@@ -1,4 +1,4 @@
-katana_arm_controller:
+arm_controller:
   type: "effort_controllers/JointTrajectoryController"
   joints:
     - katana_motor1_pan_joint

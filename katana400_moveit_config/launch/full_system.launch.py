@@ -22,7 +22,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            'connection_type', default_value='serial',
+            'connection_type', default_value='tcp',
             description="'tcp' or 'serial'"),
         DeclareLaunchArgument(
             'ip_address', default_value='192.168.1.1',

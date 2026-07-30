@@ -1,0 +1,48 @@
+# This config file is used by ros2_control (real hardware mode)
+controller_manager:
+  ros__parameters:
+    update_rate: 7  # read()/write() are instant mutex copies; KNI runs in background thread
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    gripper_controller:
+      type: position_controllers/GripperActionController
+
+
+arm_controller:
+  ros__parameters:
+    joints:
+      - katana_motor1_pan_joint 
+      - katana_motor2_lift_joint
+      - katana_motor3_lift_joint
+      - katana_motor4_lift_joint
+      - katana_motor5_wrist_roll_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    # Allow the trajectory to start even if current position is slightly off.
+    allow_nonzero_velocity_at_trajectory_end: true
+    constraints:
+      stopped_velocity_tolerance: 0.05
+      goal_time: 5.0
+      katana_motor1_pan_joint:   { trajectory: 0.0, goal: 0.15 }
+      katana_motor2_lift_joint:  { trajectory: 0.0, goal: 0.15 }
+      katana_motor3_lift_joint:  { trajectory: 0.0, goal: 0.15 }
+      katana_motor4_lift_joint:  { trajectory: 0.0, goal: 0.15 }
+      katana_motor5_wrist_roll_joint: { trajectory: 0.0, goal: 0.15 }
+
+gripper_controller:
+  ros__parameters:
+    joint: katana_l_finger_joint
+    action_monitor_rate: 20.0
+    allow_stalling: true
+    stall_velocity_threshold: 0.001
+    stall_timeout: 1.0
+    goal_tolerance: 0.05
+    max_effort: 0.0

@@ -161,18 +161,22 @@ ros2 launch katana400_moveit_config moveit_rviz.launch.py
 After the hardware driver is running, use the tester node for direct joint control:
 
 ```bash
-ros2 run katana_test ros2control_tester
+ros2 run katana_teleop katana_teleop_key
 ```
 
 Key bindings:
 
 | Key | Action |
 |-----|--------|
-| `1`–`7` | Select joint (1=pan, 2–5=lift/wrist, 6–7=fingers) |
-| `+` / `-` | Move selected joint +/- |
-| `e` | Enable motors |
-| `d` | Disable motors |
-| `q` | Quit |
+| `1`–`5` | Select arm joint to jog (1=pan, 2–5=lift/wrist) |
+| `W` / `S` | Jog selected joint + / - step |
+| `A` / `D` | Jog joint 1 (pan) + / - step |
+| `H` | Home (all joints → 0 rad) |
+| `G` / `C` | Open / Close gripper |
+| `E` | Enable motors |
+| `P` | Print joint states |
+| `+` / `-` | Double / Halve step size |
+| `Q` | Quit |
 
 ---
 
@@ -182,6 +186,8 @@ The Katana 400 uses **incremental encoders** — encoder values are consistent w
 
 - Set `calibrate_on_startup:=true` on first launch after powering the arm.
 - Set `calibrate_on_startup:=false` on subsequent launches within the same power cycle to avoid re-homing.
+
+> **Note on offsets:** When the arm finishes this physical KNI calibration sequence, it rests in a specific physical "zero" position. This physical position does **not** match the `0.0` (start/home) pose defined in the URDF file. To resolve this discrepancy, the `KatanaHardwareInterface` uses joint offsets configured in `katana_400_6m180_with_controlbox.ros2_control.xacro` to transparently map the KNI encoder space to the URDF joint space.
 
 ---
 

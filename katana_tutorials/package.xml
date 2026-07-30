@@ -25,6 +25,7 @@
 
   <!-- Tutorial 4: direct KNI (ik_pose_mover) -->
   <depend>kni</depend>
+  <depend>ament_index_cpp</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

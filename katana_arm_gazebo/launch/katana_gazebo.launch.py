@@ -88,7 +88,7 @@ def generate_launch_description():
 
     # Controller spawners — staggered to let gz_ros2_control finish loading
     spawn_jsb = TimerAction(
-        period=3.0,
+        period=15.0,
         actions=[Node(
             package='controller_manager',
             executable='spawner',
@@ -97,16 +97,16 @@ def generate_launch_description():
         )],
     )
     spawn_arm = TimerAction(
-        period=5.0,
+        period=17.0,
         actions=[Node(
             package='controller_manager',
             executable='spawner',
-            arguments=['katana_arm_controller'],
+            arguments=['arm_controller'],
             output='screen',
         )],
     )
     spawn_gripper = TimerAction(
-        period=7.0,
+        period=19.0,
         actions=[Node(
             package='controller_manager',
             executable='spawner',

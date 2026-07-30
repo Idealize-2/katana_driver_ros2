@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!--
+    Single gz_ros2_control plugin for the combined mobile+arm system.
+    The arm's ros2_control block comes from transmissions.urdf.xacro (included via
+    katana_400_6m180.urdf.xacro with use_gazebo:=true use_gazebo_plugin:=false).
+    The mobile base ros2_control block comes from mobile_base.ros2_control.xacro with
+    use_gazebo:=true. This file provides the ONE plugin that manages both.
+  -->
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find katana_arm_gazebo)/config/katana_mobile_controllers.yaml</parameters>
+    </plugin>
+  </gazebo>
+
+  <!-- Arm link materials and gravity-off (mirrors katana_description/urdf/gazebo.urdf.xacro) -->
+  <gazebo reference="katana_base_link">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+  <gazebo reference="katana_motor1_pan_link">
+    <material value="Gazebo/Grey"/>
+    <turnGravityOff>true</turnGravityOff>
+  </gazebo>
+  <gazebo reference="katana_motor2_lift_link">
+    <material value="Gazebo/Grey"/>
+    <turnGravityOff>true</turnGravityOff>
+  </gazebo>
+  <gazebo reference="katana_motor3_lift_link">
+    <material value="Gazebo/Grey"/>
+    <turnGravityOff>true</turnGravityOff>
+  </gazebo>
+  <gazebo reference="katana_motor4_lift_link">
+    <material value="Gazebo/Grey"/>
+    <turnGravityOff>true</turnGravityOff>
+  </gazebo>
+  <gazebo reference="katana_motor5_wrist_roll_link">
+    <material value="Gazebo/Grey"/>
+    <turnGravityOff>true</turnGravityOff>
+  </gazebo>
+  <gazebo reference="katana_gripper_link">
+    <material value="Gazebo/Grey"/>
+    <turnGravityOff>true</turnGravityOff>
+  </gazebo>
+  <gazebo reference="katana_l_finger_link">
+    <material value="Gazebo/Grey"/>
+    <turnGravityOff>true</turnGravityOff>
+  </gazebo>
+  <gazebo reference="katana_r_finger_link">
+    <material value="Gazebo/Grey"/>
+    <turnGravityOff>true</turnGravityOff>
+  </gazebo>
+
+  <!-- Mobile base link materials -->
+  <gazebo reference="mobile_base_link">
+    <material value="Gazebo/Blue"/>
+  </gazebo>
+  <gazebo reference="left_wheel_link">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+  <gazebo reference="right_wheel_link">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+  <gazebo reference="caster_wheel_link">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+
+</robot>

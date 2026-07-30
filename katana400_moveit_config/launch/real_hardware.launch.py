@@ -4,25 +4,25 @@ real_hardware.launch.py  (katana400_moveit_config)
 Minimal ros2_control stack for the physical Katana 400 6M180 arm — no MoveIt, no simulation.
 Starts: robot_state_publisher, controller_manager, and all three controllers.
 
-Launch arguments (all optional — defaults suit a serial-connected Katana 400 6M180):
-  connection_type       'serial' or 'tcp'
-  ip_address            arm IP address (TCP mode)
+Launch arguments (all optional — defaults suit a TCP-connected Katana 400 6M180):
+  connection_type       'serial' or 'tcp' (default 'tcp')
+  ip_address            arm IP address (TCP mode, default 192.168.1.1)
   tcp_port              KNI port, default 5566 (TCP mode)
   serial_port           /dev/ttyS<N> index (serial mode, e.g. 0 for /dev/ttyS0)
   serial_baud           baud rate (serial mode, default 57600)
   config_file           absolute path to the KNI .cfg for your arm variant
-  calibrate_on_startup  'true'/'false' — run full calibration on first activate
+  calibrate_on_startup  'true'/'false' — run full calibration on first activate (default 'true')
 
 Example — serial connection:
-  ros2 launch katana400_moveit_config real_hardware.launch.py \\
+  ros2 launch katana400_moveit_config real_hardware.launch.py \
       connection_type:=serial serial_port:=0
 
 Example — TCP connection:
-  ros2 launch katana400_moveit_config real_hardware.launch.py \\
+  ros2 launch katana400_moveit_config real_hardware.launch.py \
       connection_type:=tcp ip_address:=192.168.1.1
 
 Example — skip calibration (arm already homed this power cycle):
-  ros2 launch katana400_moveit_config real_hardware.launch.py \\
+  ros2 launch katana400_moveit_config real_hardware.launch.py \
       calibrate_on_startup:=false
 """
 
@@ -128,7 +128,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            'connection_type', default_value='serial',
+            'connection_type', default_value='tcp',
             description="'tcp' or 'serial'"),
         DeclareLaunchArgument(
             'ip_address', default_value='192.168.1.1',

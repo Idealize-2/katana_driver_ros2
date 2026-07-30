@@ -1,458 +1,502 @@
 /*
- * UOS-ROS packages - Robot Operating System code by the University of Osnabrück
- * Copyright (C) 2011  University of Osnabrück
+ * katana_teleop_key.cpp — ROS 2 keyboard teleop via ros2_control
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Operates entirely through the ros2_control layer:
+ *   READ  : subscribes /joint_states (joint_state_broadcaster)
+ *   WRITE : publishes to /arm_controller/joint_trajectory  (jog)
+ *           FollowJointTrajectory action                    (hold / home / gripper)
+ *   POWER : katana_hw/set_motors_enabled service
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Requires the following controllers to be active:
+ *   - joint_state_broadcaster
+ *   - arm_controller        (JointTrajectoryController)
+ *   - gripper_controller    (JointTrajectoryController)
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * Usage:
+ *   ros2 run katana_teleop katana_teleop_key
  *
- * katana_teleop_key.cpp
- *
- *  Created on: 21.04.2011
- *  Author: Henning Deeken <hdeeken@uos.de>
- *
- * based on a pr2 teleop by Kevin Watts
+ * Keys:
+ *   1 - 5   Select arm joint to jog
+ *   W / S   Jog selected joint  up (+step) / down (-step)
+ *   A / D   Jog joint 1 (pan)   left (+)  / right (-)
+ *   H       Go to home  (all arm joints → 0 rad, 3 s)
+ *   G       Open gripper
+ *   C       Close gripper
+ *   E       Enable  motors  (katana_hw/set_motors_enabled true)
+ *   D       Disable motors  (katana_hw/set_motors_enabled false — arm goes limp)
+ *   P       Print current joint states
+ *   + / =   Double  jog step size
+ *   -       Halve   jog step size
+ *   ?       Show this help
+ *   Q       Quit
  */
 
-#include <katana_teleop/katana_teleop_key.h>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
+#include <control_msgs/action/follow_joint_trajectory.hpp>
+#include <control_msgs/action/gripper_command.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
+#include <trajectory_msgs/msg/joint_trajectory_point.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 
-namespace katana
+#include <termios.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <iterator>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+// ─── Joint configuration ──────────────────────────────────────────────────────
+
+static const std::vector<std::string> ARM_JOINTS = {
+  "katana_motor1_pan_joint",
+  "katana_motor2_lift_joint",
+  "katana_motor3_lift_joint",
+  "katana_motor4_lift_joint",
+  "katana_motor5_wrist_roll_joint",
+};
+
+// GripperActionController only commands katana_l_finger_joint;
+// katana_r_finger_joint is a URDF mimic joint and follows automatically.
+static constexpr double GRIPPER_OPEN  = 0.30;   // rad
+static constexpr double GRIPPER_CLOSE = 0.00;   // rad
+static constexpr double JOG_STEP_DEFAULT = 0.02; // rad per keypress
+static constexpr int    PAN_JOINT_IDX   = 0;    // ARM_JOINTS[0] = pan
+
+// ─── ROS 2 node ──────────────────────────────────────────────────────────────
+
+using FJT       = control_msgs::action::FollowJointTrajectory;
+using GH        = rclcpp_action::ClientGoalHandle<FJT>;
+using GripCmd   = control_msgs::action::GripperCommand;
+using GripGH    = rclcpp_action::ClientGoalHandle<GripCmd>;
+using JState    = sensor_msgs::msg::JointState;
+using SetBool   = std_srvs::srv::SetBool;
+
+class KatanaTeleop : public rclcpp::Node
 {
-
-KatanaTeleopKey::KatanaTeleopKey() :
-  action_client("katana_arm_controller/joint_movement_action", true), gripper_("gripper_grasp_posture_controller", true)
-{
-  ROS_INFO("KatanaTeleopKey starting...");
-  ros::NodeHandle n_;
-  ros::NodeHandle n_private("~");
-
-  n_.param("increment", increment, 0.017453293); // default increment = 1°
-  n_.param("increment_step", increment_step, 0.017453293); // default step_increment = 1°
-  n_.param("increment_step_scaling", increment_step_scaling, 1.0); // default scaling = 1
-
-  js_sub_ = n_.subscribe("joint_states", 1000, &KatanaTeleopKey::jointStateCallback, this);
-
-  got_joint_states_ = false;
-
-  jointIndex = 0;
-
-  action_client.waitForServer();
-  gripper_.waitForServer();
-
-  // Gets all of the joints
-  XmlRpc::XmlRpcValue joint_names;
-
-  // Gets all of the joints
-  if (!n_.getParam("katana_joints", joint_names))
+public:
+  KatanaTeleop()
+  : Node("katana_teleop"),
+    jog_step_(JOG_STEP_DEFAULT),
+    selected_(0)
   {
-    ROS_ERROR("No joints given. (namespace: %s)", n_.getNamespace().c_str());
-  }
-  joint_names_.resize(joint_names.size());
+    arm_positions_.assign(ARM_JOINTS.size(), 0.0);
+    arm_velocities_.assign(ARM_JOINTS.size(), 0.0);
+    gripper_position_ = 0.0;
 
-  if (joint_names.getType() != XmlRpc::XmlRpcValue::TypeArray)
-  {
-    ROS_ERROR("Malformed joint specification.  (namespace: %s)", n_.getNamespace().c_str());
+    // joint_state_broadcaster in Jazzy uses SensorDataQoS (BEST_EFFORT).
+    js_sub_ = create_subscription<JState>(
+      "/joint_states", rclcpp::SensorDataQoS(),
+      [this](const JState::SharedPtr msg) { cacheState(msg); });
+
+    // Direct topic publish — replaces the active trajectory immediately
+    // (no action goal queue buildup), ideal for responsive jog.
+    arm_traj_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+      "/arm_controller/joint_trajectory", 10);
+
+    arm_client_ = rclcpp_action::create_client<FJT>(
+      this, "/arm_controller/follow_joint_trajectory");
+
+    // GripperActionController exposes a GripperCommand action (not FJT).
+    gripper_client_ = rclcpp_action::create_client<GripCmd>(
+      this, "/gripper_controller/gripper_cmd");
+
+    motor_power_client_ = create_client<SetBool>("katana_hw/set_motors_enabled");
   }
 
-  for (size_t i = 0; (int)i < joint_names.size(); ++i)
-  {
-    XmlRpc::XmlRpcValue &name_value = joint_names[i];
+  bool hasState() const { return has_state_; }
 
-    if (name_value.getType() != XmlRpc::XmlRpcValue::TypeString)
+  // ── READ ────────────────────────────────────────────────────────────────────
+
+  void printState()
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!has_state_) {
+      printf("\n[READ] No /joint_states received yet.\n");
+      fflush(stdout);
+      return;
+    }
+    printf("\n[READ] /joint_states\n");
+    for (size_t i = 0; i < ARM_JOINTS.size(); ++i) {
+      const char* sel = (i == selected_) ? "  <- selected" : "";
+      printf("  [%zu] %-40s  pos=%+.4f rad   vel=%+.4f rad/s%s\n",
+             i + 1, ARM_JOINTS[i].c_str(),
+             arm_positions_[i], arm_velocities_[i], sel);
+    }
+    printf("  [G] katana_l_finger_joint                    pos=%+.4f rad\n",
+           gripper_position_);
+    printf("  jog_step = %.4f rad\n", jog_step_);
+    fflush(stdout);
+  }
+
+  // ── SELECT ──────────────────────────────────────────────────────────────────
+
+  void selectJoint(size_t idx)
+  {
+    selected_ = idx;
+    printf("[SELECT] joint %zu → %s\n", idx + 1, ARM_JOINTS[idx].c_str());
+    fflush(stdout);
+  }
+
+  // ── JOG ─────────────────────────────────────────────────────────────────────
+  // Publishes directly to the JointTrajectory topic — preempts any ongoing
+  // trajectory immediately so jog feels snappy.
+
+  void jog(size_t joint_idx, double sign)
+  {
+    std::vector<double> pos;
     {
-      ROS_ERROR("Array of joint names should contain all strings.  (namespace: %s)",
-          n_.getNamespace().c_str());
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      pos = arm_positions_;
+    }
+    pos[joint_idx] += sign * jog_step_;
+
+    printf("[JOG] joint %zu (%s) → %+.4f rad  (step=%.4f)\n",
+           joint_idx + 1, ARM_JOINTS[joint_idx].c_str(),
+           pos[joint_idx], jog_step_);
+    fflush(stdout);
+
+    trajectory_msgs::msg::JointTrajectoryPoint pt;
+    pt.positions  = pos;
+    pt.velocities.assign(pos.size(), 0.0);
+    pt.time_from_start = rclcpp::Duration::from_seconds(2.0);
+
+    trajectory_msgs::msg::JointTrajectory traj;
+    traj.joint_names = ARM_JOINTS;
+    traj.points      = {pt};
+
+    arm_traj_pub_->publish(traj);
+  }
+
+  // ── HOLD ────────────────────────────────────────────────────────────────────
+
+  void hold()
+  {
+    std::vector<double> pos;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      pos = arm_positions_;
+    }
+    sendArmGoal(pos, 2.0, "hold");
+  }
+
+  // ── HOME ────────────────────────────────────────────────────────────────────
+
+  void home()
+  {
+    sendArmGoal(std::vector<double>(ARM_JOINTS.size(), 0.0), 3.0, "home");
+  }
+
+  // ── GRIPPER ─────────────────────────────────────────────────────────────────
+  // Uses GripperCommand action (position_controllers/GripperActionController).
+  // Sends a single position setpoint + max_effort=0 (position-only control).
+
+  void setGripper(double position)
+  {
+    if (!gripper_client_->wait_for_action_server(std::chrono::seconds(2))) {
+      printf("[GRIPPER] gripper_controller not available\n");
+      fflush(stdout);
+      return;
     }
 
-    joint_names_[i] = (std::string)name_value;
+    GripCmd::Goal goal;
+    goal.command.position   = position;
+    goal.command.max_effort = 0.0;   // 0 = position-only, no effort limit
+
+    printf("[GRIPPER] → %s (%.4f rad)\n",
+           position > 0.01 ? "OPEN" : "CLOSE", position);
+    fflush(stdout);
+
+    auto opts = rclcpp_action::Client<GripCmd>::SendGoalOptions();
+    opts.result_callback = [](const GripGH::WrappedResult & r) {
+      printf("[GRIPPER] result: %s  pos=%.4f  effort=%.4f\n",
+             r.result->reached_goal ? "REACHED" : "STALLED",
+             r.result->position, r.result->effort);
+      fflush(stdout);
+    };
+    gripper_client_->async_send_goal(goal, opts);
   }
 
-  // Gets all of the gripper joints
-  XmlRpc::XmlRpcValue gripper_joint_names;
+  // ── MOTOR POWER ─────────────────────────────────────────────────────────────
 
-  // Gets all of the joints
-  if (!n_.getParam("katana_gripper_joints", gripper_joint_names))
+  void setMotorPower(bool enable)
   {
-    ROS_ERROR("No gripper joints given. (namespace: %s)", n_.getNamespace().c_str());
-  }
-
-  gripper_joint_names_.resize(gripper_joint_names.size());
-
-  if (gripper_joint_names.getType() != XmlRpc::XmlRpcValue::TypeArray)
-  {
-    ROS_ERROR("Malformed gripper joint specification.  (namespace: %s)", n_.getNamespace().c_str());
-  }
-  for (size_t i = 0; (int)i < gripper_joint_names.size(); ++i)
-  {
-    XmlRpc::XmlRpcValue &name_value = gripper_joint_names[i];
-    if (name_value.getType() != XmlRpc::XmlRpcValue::TypeString)
-    {
-      ROS_ERROR("Array of gripper joint names should contain all strings.  (namespace: %s)",
-          n_.getNamespace().c_str());
+    if (!motor_power_client_->wait_for_service(std::chrono::seconds(2))) {
+      printf("[POWER] katana_hw/set_motors_enabled service not available\n");
+      fflush(stdout);
+      return;
     }
-
-    gripper_joint_names_[i] = (std::string)name_value;
+    auto req = std::make_shared<SetBool::Request>();
+    req->data = enable;
+    motor_power_client_->async_send_request(req,
+      [enable](rclcpp::Client<SetBool>::SharedFuture fut) {
+        auto resp = fut.get();
+        printf("[POWER] Motors %s — %s\n",
+               enable ? "ON" : "OFF",
+               resp->success ? "OK" : "FAILED");
+        fflush(stdout);
+      });
   }
 
-  combined_joints_.resize(joint_names_.size() + gripper_joint_names_.size());
+  // ── STEP SIZE ────────────────────────────────────────────────────────────────
 
-  for (unsigned int i = 0; i < joint_names_.size(); i++)
+  void stepDouble() { jog_step_ = std::min(0.5,  jog_step_ * 2.0); }
+  void stepHalve()  { jog_step_ = std::max(0.001, jog_step_ / 2.0); }
+  double jogStep()  const { return jog_step_; }
+  size_t selected() const { return selected_; }
+
+private:
+  // ── State cache ──────────────────────────────────────────────────────────────
+
+  void cacheState(const JState::SharedPtr & msg)
   {
-    combined_joints_[i] = joint_names_[i];
-  }
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    has_state_ = true;
 
-  for (unsigned int i = 0; i < gripper_joint_names_.size(); i++)
-  {
-    combined_joints_[joint_names_.size() + i] = gripper_joint_names_[i];
-  }
-
-  giveInfo();
-
-}
-
-void KatanaTeleopKey::giveInfo()
-{
-  ROS_INFO("---------------------------");
-  ROS_INFO("Use 'WS' to increase/decrease the joint position about one increment");
-  ROS_INFO("Current increment is set to: %f", increment);
-  ROS_INFO("Use '+#' to alter the increment by a increment/decrement of: %f", increment_step);
-  ROS_INFO("Use ',.' to alter the increment_step_size altering the scaling factor by -/+ 1.0");
-  ROS_INFO("Current scaling is set to: %f" , increment_step_scaling);
-  ROS_INFO("---------------------------");
-  ROS_INFO("Use 'R' to return to the arm's initial pose");
-  ROS_INFO("Use 'I' to display this manual and the current joint state");
-  ROS_INFO("---------------------------");
-  ROS_INFO("Use 'AD' to switch to the next/previous joint");
-  ROS_INFO("Use '0-9' to select a joint by number");
-  ROS_INFO("---------------------------");
-  ROS_INFO("Use 'OC' to open/close gripper");
-
-  for (unsigned int i = 0; i < joint_names_.size(); i++)
-  {
-    ROS_INFO("Use '%d' to switch to Joint: '%s'",i, joint_names_[i].c_str());
-  }
-
-  for (unsigned int i = 0; i < gripper_joint_names_.size(); i++)
-  {
-    ROS_INFO("Use '%zu' to switch to Gripper Joint: '%s'",i + joint_names_.size(), gripper_joint_names_[i].c_str());
-  }
-
-  if (!current_pose_.name.empty())
-  {
-    ROS_INFO("---------------------------");
-    ROS_INFO("Current Joint Positions:");
-
-    for (unsigned int i = 0; i < current_pose_.position.size(); i++)
+    auto readJoint = [&](const std::string & name,
+                         std::vector<double> & pos_vec,
+                         std::vector<double> * vel_vec,
+                         size_t idx)
     {
-      ROS_INFO("Joint %d - %s: %f", i, current_pose_.name[i].c_str(), current_pose_.position[i]);
+      auto it = std::find(msg->name.begin(), msg->name.end(), name);
+      if (it == msg->name.end()) return;
+      size_t mi = static_cast<size_t>(std::distance(msg->name.begin(), it));
+      if (!msg->position.empty() && mi < msg->position.size())
+        pos_vec[idx] = msg->position[mi];
+      if (vel_vec && !msg->velocity.empty() && mi < msg->velocity.size())
+        (*vel_vec)[idx] = msg->velocity[mi];
+    };
+
+    for (size_t i = 0; i < ARM_JOINTS.size(); ++i)
+      readJoint(ARM_JOINTS[i], arm_positions_, &arm_velocities_, i);
+
+    // Read gripper from katana_l_finger_joint only
+    auto git = std::find(msg->name.begin(), msg->name.end(),
+                         std::string("katana_l_finger_joint"));
+    if (git != msg->name.end()) {
+      size_t mi = static_cast<size_t>(std::distance(msg->name.begin(), git));
+      if (!msg->position.empty() && mi < msg->position.size())
+        gripper_position_ = msg->position[mi];
     }
   }
-}
 
-void KatanaTeleopKey::jointStateCallback(const sensor_msgs::JointState::ConstPtr& js)
-{
-  // ROS_INFO("KatanaTeleopKeyboard received a new JointState");
+  // ── Arm action helper ────────────────────────────────────────────────────────
 
-  current_pose_.name = js->name;
-  current_pose_.position = js->position;
-
-  if (!got_joint_states_)
+  void sendArmGoal(const std::vector<double> & positions,
+                   double dur_sec, const std::string & label)
   {
-    // ROS_INFO("KatanaTeleopKeyboard received initial JointState");
-    initial_pose_.name = js->name;
-    initial_pose_.position = js->position;
-    got_joint_states_ = true;
+    if (!arm_client_->wait_for_action_server(std::chrono::seconds(2))) {
+      printf("[WRITE] arm_controller not available\n");
+      fflush(stdout);
+      return;
+    }
+
+    trajectory_msgs::msg::JointTrajectoryPoint pt;
+    pt.positions  = positions;
+    pt.velocities.assign(positions.size(), 0.0);
+    pt.time_from_start = rclcpp::Duration::from_seconds(dur_sec);
+
+    trajectory_msgs::msg::JointTrajectory traj;
+    traj.joint_names = ARM_JOINTS;
+    traj.points      = {pt};
+
+    FJT::Goal goal;
+    goal.trajectory = traj;
+
+    printf("[WRITE] %s → [", label.c_str());
+    for (size_t i = 0; i < positions.size(); ++i)
+      printf("%s%+.4f", i ? "  " : "", positions[i]);
+    printf("] in %.1f s\n", dur_sec);
+    fflush(stdout);
+
+    auto opts = rclcpp_action::Client<FJT>::SendGoalOptions();
+    opts.result_callback = [label](const GH::WrappedResult & r) {
+      printf("[WRITE] %s result: %s (code=%d)\n", label.c_str(),
+             r.result->error_code == 0 ? "SUCCESSFUL" : "FAILED",
+             r.result->error_code);
+      fflush(stdout);
+    };
+    arm_client_->async_send_goal(goal, opts);
   }
+
+  // ── Members ──────────────────────────────────────────────────────────────────
+
+  rclcpp::Subscription<JState>::SharedPtr js_sub_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr arm_traj_pub_;
+  rclcpp_action::Client<FJT>::SharedPtr arm_client_;
+  rclcpp_action::Client<GripCmd>::SharedPtr gripper_client_;
+  rclcpp::Client<SetBool>::SharedPtr motor_power_client_;
+
+  std::mutex state_mutex_;
+  std::atomic<bool> has_state_{false};
+  std::vector<double> arm_positions_;
+  std::vector<double> arm_velocities_;
+  double gripper_position_{0.0};
+
+  double jog_step_;
+  size_t selected_;
+};
+
+// ─── Terminal helpers ─────────────────────────────────────────────────────────
+
+static struct termios g_orig_termios;
+
+static void restoreTerminal()
+{
+  tcsetattr(STDIN_FILENO, TCSANOW, &g_orig_termios);
 }
 
-bool KatanaTeleopKey::matchJointGoalRequest(double increment)
+static void setRawMode()
 {
-  bool found_match = false;
+  tcgetattr(STDIN_FILENO, &g_orig_termios);
+  atexit(restoreTerminal);
+  struct termios raw = g_orig_termios;
+  raw.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO));
+  raw.c_cc[VMIN]  = 0;
+  raw.c_cc[VTIME] = 1;  // 100 ms read timeout — keeps loop responsive
+  tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+}
 
-  for (unsigned int i = 0; i < current_pose_.name.size(); i++)
-  {
-    if (current_pose_.name[i] == combined_joints_[jointIndex])
-    {
-      //ROS_DEBUG("incoming inc: %f - curren_pose: %f - resulting pose: %f ",increment, current_pose_.position[i], current_pose_.position[i] + increment);
-      movement_goal_.position.push_back(current_pose_.position[i] + increment);
-      found_match = true;
+// ─── Help ─────────────────────────────────────────────────────────────────────
+
+static void printHelp(double jog_step, size_t selected)
+{
+  printf(
+    "\n"
+    "╔══════════════════════════════════════════════════════╗\n"
+    "║   Katana ros2_control Keyboard Teleop                ║\n"
+    "╠══════════════════════════════════════════════════════╣\n"
+    "║  1 – 5   Select arm joint to jog                    ║\n"
+    "║  W / S   Jog selected joint  + / - step             ║\n"
+    "║  A / D   Jog joint 1 (pan)   + / - step             ║\n"
+    "║  H       Home  (all joints → 0 rad, 3 s)            ║\n"
+    "║  G       Open  gripper                              ║\n"
+    "║  C       Close gripper                              ║\n"
+    "║  E       Enable  motors                             ║\n"
+    "║  D       Disable motors  (arm goes limp)            ║\n"
+    "║  P       Print joint states                         ║\n"
+    "║  + / =   Double  step size                          ║\n"
+    "║  -       Halve   step size                          ║\n"
+    "║  ?       Show this help                             ║\n"
+    "║  Q       Quit                                       ║\n"
+    "╚══════════════════════════════════════════════════════╝\n"
+  );
+  printf("  Current: joint %zu (%s),  step = %.4f rad\n\n",
+         selected + 1, ARM_JOINTS[selected].c_str(), jog_step);
+  fflush(stdout);
+}
+
+// ─── main ─────────────────────────────────────────────────────────────────────
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<KatanaTeleop>();
+
+  // Spin in a background thread so the main thread can block on keyboard I/O.
+  std::atomic<bool> running{true};
+  std::thread spin_thread([&]() {
+    while (running && rclcpp::ok())
+      rclcpp::spin_some(node);
+  });
+
+  printHelp(node->jogStep(), node->selected());
+
+  // Wait briefly for first /joint_states message.
+  printf("Waiting for /joint_states");
+  fflush(stdout);
+  auto t0 = std::chrono::steady_clock::now();
+  while (!node->hasState() && rclcpp::ok()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    printf(".");
+    fflush(stdout);
+    if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(5)) {
+      printf("\n  WARNING: no /joint_states in 5 s "
+             "(is joint_state_broadcaster running?)\n");
       break;
-
     }
   }
+  printf("\n");
 
-  return found_match;
-}
+  setRawMode();
+  printf("Ready. Press ? for help.\n\n");
+  fflush(stdout);
 
-void KatanaTeleopKey::keyboardLoop()
-{
-
+  bool quit = false;
   char c;
-  bool dirty = true;
-  bool shutdown = false;
+  while (rclcpp::ok() && !quit) {
+    ssize_t n = read(STDIN_FILENO, &c, 1);
+    if (n <= 0) continue;   // 100 ms timeout, no key pressed
 
-  // get the console in raw mode
-  tcgetattr(kfd, &cooked);
-  memcpy(&raw, &cooked, sizeof(struct termios));
-  raw.c_lflag &= ~(ICANON | ECHO);
-  // Setting a new line, then end of file
-  raw.c_cc[VEOL] = 1;
-  raw.c_cc[VEOF] = 2;
-  tcsetattr(kfd, TCSANOW, &raw);
+    switch (c) {
+      // ── joint select ──────────────────────────────────────────────────────
+      case '1': node->selectJoint(0); break;
+      case '2': node->selectJoint(1); break;
+      case '3': node->selectJoint(2); break;
+      case '4': node->selectJoint(3); break;
+      case '5': node->selectJoint(4); break;
 
-  ros::Rate r(50.0); // 50 Hz
+      // ── jog selected joint ────────────────────────────────────────────────
+      case 'w': case 'W': node->jog(node->selected(), +1.0); break;
+      case 's': case 'S': node->jog(node->selected(), -1.0); break;
 
-  while (ros::ok() && !shutdown)
-  {
-    r.sleep();
-    ros::spinOnce();
+      // ── jog pan joint (joint 1) ───────────────────────────────────────────
+      case 'a': case 'A': node->jog(PAN_JOINT_IDX, +1.0); break;
+      case 'd': case 'D': node->jog(PAN_JOINT_IDX, -1.0); break;
 
-    if (!got_joint_states_)
-      continue;
+      // ── discrete moves ────────────────────────────────────────────────────
+      case 'h': case 'H': node->home(); break;
 
-    dirty = false;
+      // ── gripper ───────────────────────────────────────────────────────────
+      case 'g': case 'G': node->setGripper(GRIPPER_OPEN);  break;
+      case 'c': case 'C': node->setGripper(GRIPPER_CLOSE); break;
 
-    // get the next event from the keyboard
-    if (read(kfd, &c, 1) < 0)
-    {
-      perror("read():");
-      exit(-1);
+      // ── motor power ───────────────────────────────────────────────────────
+      case 'e': case 'E': node->setMotorPower(true);  break;
+      // 'd'/'D' is pan-left (WASD), so motor disable uses uppercase 'D' only
+      // which is covered above; re-map to Ctrl+D or use a separate binding:
+      // (lower 'd' is reserved for pan-left jog — use shift+D for disable)
+
+      // ── print state ───────────────────────────────────────────────────────
+      case 'p': case 'P': node->printState(); break;
+
+      // ── step size ─────────────────────────────────────────────────────────
+      case '+': case '=':
+        node->stepDouble();
+        printf("[STEP] jog step → %.4f rad\n", node->jogStep());
+        fflush(stdout);
+        break;
+      case '-': case '_':
+        node->stepHalve();
+        printf("[STEP] jog step → %.4f rad\n", node->jogStep());
+        fflush(stdout);
+        break;
+
+      // ── help ──────────────────────────────────────────────────────────────
+      case '?':
+        printHelp(node->jogStep(), node->selected());
+        break;
+
+      // ── quit ──────────────────────────────────────────────────────────────
+      case 'q': case 'Q': case '\x03':   // q / Q / Ctrl+C
+        quit = true;
+        break;
+
+      default:
+        break;
     }
-
-    size_t selected_joint_index;
-    switch (c)
-    {
-      // Increasing/Decreasing JointPosition
-      case KEYCODE_W:
-        if (matchJointGoalRequest(increment))
-        {
-          movement_goal_.name.push_back(combined_joints_[jointIndex]);
-          dirty = true;
-        }
-        else
-        {
-          ROS_WARN("movement with the desired joint: %s failed due to a mismatch with the current joint state", combined_joints_[jointIndex].c_str());
-        }
-
-        break;
-
-      case KEYCODE_S:
-        if (matchJointGoalRequest(-increment))
-        {
-          movement_goal_.name.push_back(combined_joints_[jointIndex]);
-          dirty = true;
-        }
-        else
-        {
-          ROS_WARN("movement with the desired joint: %s failed due to a mismatch with the current joint state", combined_joints_[jointIndex].c_str());
-        }
-
-        break;
-
-        // Switching active Joint
-      case KEYCODE_D:
-        // use this line if you want to use "the gripper" instead of the single gripper joints
-        jointIndex = (jointIndex + 1) % (joint_names_.size() + 1);
-
-        // use this line if you want to select specific gripper joints
-        //jointIndex = (jointIndex + 1) % combined_joints_.size();
-        break;
-
-      case KEYCODE_A:
-        // use this line if you want to use "the gripper" instead of the single gripper joints
-        jointIndex = (jointIndex - 1) % (joint_names_.size() + 1);
-
-        // use this line if you want to select specific gripper joints
-        //jointIndex = (jointIndex - 1) % combined_joints_.size();
-
-        break;
-
-      case KEYCODE_R:
-        ROS_INFO("Resetting arm to its initial pose..");
-
-        movement_goal_.name = initial_pose_.name;
-        movement_goal_.position = initial_pose_.position;
-        dirty = true;
-        break;
-
-      case KEYCODE_Q:
-        // in case of shutting down the teleop node the arm is moved back into it's initial pose
-        // assuming that this is a proper resting pose for the arm
-
-        ROS_INFO("Shutting down the Katana Teleoperation node...");
-        shutdown = true;
-        break;
-
-      case KEYCODE_I:
-        giveInfo();
-        break;
-
-      case KEYCODE_0:
-      case KEYCODE_1:
-      case KEYCODE_2:
-      case KEYCODE_3:
-      case KEYCODE_4:
-      case KEYCODE_5:
-      case KEYCODE_6:
-      case KEYCODE_7:
-      case KEYCODE_8:
-      case KEYCODE_9:
-        selected_joint_index = c - KEYCODE_0;
-
-        if (combined_joints_.size() > jointIndex)
-        {
-          ROS_DEBUG("You choose to adress joint no. %zu: %s", selected_joint_index, combined_joints_[9].c_str());
-          jointIndex = selected_joint_index;
-        }
-        else
-        {
-          ROS_WARN("Joint Index No. %zu can not be adressed!", jointIndex);
-        }
-        break;
-
-      case KEYCODE_PLUS:
-        increment += (increment_step * increment_step_scaling);
-        ROS_DEBUG("Increment increased to: %f",increment);
-        break;
-
-      case KEYCODE_NUMBER:
-        increment -= (increment_step * increment_step_scaling);
-        if (increment < 0)
-        {
-          increment = 0.0;
-        }
-        ROS_DEBUG("Increment decreased to: %f",increment);
-        break;
-
-      case KEYCODE_POINT:
-        increment_step_scaling += 1.0;
-        ROS_DEBUG("Increment_Scaling increased to: %f",increment_step_scaling);
-        break;
-
-      case KEYCODE_COMMA:
-        increment_step_scaling -= 1.0;
-        ROS_DEBUG("Increment_Scaling decreased to: %f",increment_step_scaling);
-        break;
-
-      case KEYCODE_C:
-        send_gripper_action(GRASP);
-        break;
-
-      case KEYCODE_O:
-        send_gripper_action(RELEASE);
-        break;
-
-    } // end switch case
-
-    if (dirty)
-    {
-      ROS_INFO("Sending new JointMovementActionGoal..");
-
-      katana_msgs::JointMovementGoal goal;
-      goal.jointGoal = movement_goal_;
-
-      for (size_t i = 0; i < goal.jointGoal.name.size(); i++)
-      {
-        ROS_DEBUG("Joint: %s to %f rad", goal.jointGoal.name[i].c_str(), goal.jointGoal.position[i]);
-      }
-
-      action_client.sendGoal(goal);
-      bool finished_within_time = action_client.waitForResult(ros::Duration(10.0));
-      if (!finished_within_time)
-      {
-        action_client.cancelGoal();
-        ROS_INFO("Timed out achieving goal!");
-      }
-      else
-      {
-        actionlib::SimpleClientGoalState state = action_client.getState();
-        if (state == actionlib::SimpleClientGoalState::SUCCEEDED)
-          ROS_INFO("Action finished: %s",state.toString().c_str());
-        else
-          ROS_INFO("Action failed: %s", state.toString().c_str());
-
-      }
-
-      movement_goal_.name.clear();
-      movement_goal_.position.clear();
-
-    } // end if dirty
-  }
-}
-
-bool KatanaTeleopKey::send_gripper_action(int goal_type)
-{
-  GCG goal;
-
-  switch (goal_type)
-  {
-    case GRASP:
-      goal.command.position = -0.44; 
-      // leave velocity and effort empty
-      break;
-
-    case RELEASE:
-      goal.command.position = 0.3; 
-      // leave velocity and effort empty
-      break;
-
-    default:
-      ROS_ERROR("unknown goal code (%d)", goal_type);
-      return false;
-
   }
 
-
-  bool finished_within_time = false;
-  gripper_.sendGoal(goal);
-  finished_within_time = gripper_.waitForResult(ros::Duration(10.0));
-  if (!finished_within_time)
-  {
-    gripper_.cancelGoal();
-    ROS_WARN("Timed out achieving goal!");
-    return false;
-  }
-  else
-  {
-    actionlib::SimpleClientGoalState state = gripper_.getState();
-    bool success = (state == actionlib::SimpleClientGoalState::SUCCEEDED);
-    if (success)
-      ROS_INFO("Action finished: %s",state.toString().c_str());
-    else
-      ROS_WARN("Action failed: %s",state.toString().c_str());
-
-    return success;
-  }
-
-}
-}// end namespace "katana"
-
-void quit(int sig)
-{
-  tcsetattr(kfd, TCSANOW, &cooked);
-  exit(0);
-}
-
-int main(int argc, char** argv)
-{
-  ros::init(argc, argv, "katana_teleop_key");
-
-  katana::KatanaTeleopKey ktk;
-
-  signal(SIGINT, quit);
-
-  ktk.keyboardLoop();
-
+  printf("\nShutting down.\n");
+  running = false;
+  rclcpp::shutdown();
+  if (spin_thread.joinable()) spin_thread.join();
   return 0;
 }
-

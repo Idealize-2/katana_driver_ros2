@@ -10,7 +10,7 @@ The active packages are `katana_driver`, `katana400_moveit_config`, `katana_desc
 
 ## Environment
 
-- ROS 2 Jazzy, Ubuntu 24.04, zsh shell
+- ROS 2 Jazzy, Ubuntu 24.04
 - Workspace root: `~/Documents/INternSHipA4robotic-kanatarRobotarm/kanata_ws/`
 - All source under `src/katana_driver_ros2/`
 - User alias: `sp` → `source install/setup.zsh`
@@ -55,8 +55,8 @@ ros2 launch katana400_moveit_config moveit_rviz.launch.py
 
 ### Manual keyboard tester (no MoveIt needed)
 ```bash
-ros2 run katana_test ros2control_tester
-# Keys: 1-7 select joint, +/- move, e=enable motors, d=disable motors, q=quit
+ros2 run katana_teleop katana_teleop_key
+# Keys: 1-5 select arm joint, w/s or a/d jog, h=home, g/c=gripper, e=enable motors, p=print states, q=quit
 ```
 
 ## Architecture — active driver path
@@ -112,11 +112,13 @@ cache staleness creates false tolerance violations. Final `goal: 0.15` rad toler
 in `joint_limits.yaml` (currently 0.3). Increase toward 1.0 to go faster.
 
 ### URDF offset/flip calibration
-`KatanaHardwareInterface` applies per-joint offsets and direction flips to map KNI encoder space → URDF joint space. Parameters come from `katana_400_6m180_with_controlbox.ros2_control.xacro`:
+**Why offsets are needed:** When the arm is calibrated using the KNI library (`calibrate()` function), the physical position it ends up in (the KNI "zero" pose) does **not** match the `0.0` (start/home) position defined in the URDF. 
+
+To resolve this mismatch, `KatanaHardwareInterface` applies per-joint offsets and direction flips to map KNI encoder space → URDF joint space. Parameters come from `katana_400_6m180_with_controlbox.ros2_control.xacro`:
 
 ```
 urdf_pos = (kni_rad - urdf_offset_<joint>) * urdf_flip_<joint>
-kni_rad  = (rad * urdf_flip_<joint>) + urdf_offset_<joint>
+kni_rad  = (urdf_pos * urdf_flip_<joint>) + urdf_offset_<joint>
 ```
 
 Current calibrated values (Katana 400 6M180, all joints flipped -1 except fingers):
