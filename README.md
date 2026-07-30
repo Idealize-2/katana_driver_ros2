@@ -74,12 +74,38 @@ source install/setup.bash   # or setup.zsh
 
 | Package | Purpose |
 |---------|---------|
-| `katana_description` | URDF/xacro meshes and robot description for Katana 400 6M180 |
+| `description/katana_description` | URDF/xacro meshes and robot description for Katana 400 6M180 |
+| `description/mobile_base_description` | URDF meshes and description for the differential drive mobile base |
+| `description/mobile_katana_description` | Combined URDF (mobile base + Katana arm) |
 | `katana_driver` | `ros2_control` hardware interface plugin (`KatanaHardwareInterface`) |
-| `katana400_moveit_config` | MoveIt 2 config: SRDF, kinematics, OMPL, launch files |
-| `kni` | Neuronics KNI 4.3.0 SDK wrapper (shared library) |
-| `katana_test` | Manual tester node (`ros2control_tester`) with keyboard control |
-| `katana_msgs` | Custom message/service types |
+| `katana400_moveit_config` | MoveIt 2 config for the arm alone (SRDF, kinematics, OMPL) |
+| `katana400_mobile_moveit_config`| MoveIt 2 config for the arm + mobile base (whole-body planning) |
+| `base_low_lib/kni` | Neuronics KNI 4.3.0 SDK wrapper (shared library) |
+| `katana_teleop` | Teleoperation tools (`katana_teleop_key`) |
+| `katana_test` | Hardware diagnostic tools (e.g. `arm_disable_encoder`) |
+| `katana_tutorials` | Examples of C++ MoveIt/ros2_control APIs and direct KNI control (`ik_pose_mover`) |
+| `base_low_lib/katana_msgs` | Custom message/service types |
+| `katana_arm_gazebo` | Gazebo simulation files (pending full migration) |
+
+---
+
+## Network Configuration (TCP/Ethernet)
+
+When connecting the Katana arm via a USB-to-Ethernet adapter (or directly to your computer's Ethernet port), you must configure your computer's network interface to communicate with the arm's static IP (default: `192.168.1.1`).
+
+1. Connect the Ethernet cable from the Katana control box to your computer.
+2. Open your network settings (e.g., Network Manager in Ubuntu).
+3. Select the wired connection associated with the arm and open its **IPv4 Settings**.
+4. Change the Method to **Manual**.
+5. Add a new address:
+   - **Address:** `192.168.1.100` (or any IP in the `192.168.1.x` subnet *except* `.1`)
+   - **Netmask:** `255.255.255.0`
+   - **Gateway:** Leave blank
+6. Save the settings and reconnect to apply.
+7. Verify the connection by pinging the arm:
+   ```bash
+   ping 192.168.1.1
+   ```
 
 ---
 
@@ -119,24 +145,23 @@ Useful for debugging individual components.
 
 **Terminal 1 — Hardware driver + ros2_control:**
 ```bash
-# Serial
+# TCP (default), run calibration
+ros2 launch katana400_moveit_config real_hardware.launch.py
+
+# TCP, skip calibration (arm already homed this power cycle)
+ros2 launch katana400_moveit_config real_hardware.launch.py \
+    calibrate_on_startup:=false
+
+# Serial (legacy)
 ros2 launch katana400_moveit_config real_hardware.launch.py \
     connection_type:=serial serial_port:=0
-
-# TCP
-ros2 launch katana400_moveit_config real_hardware.launch.py \
-    connection_type:=tcp ip_address:=192.168.1.1
-
-# TCP, skip calibration
-ros2 launch katana400_moveit_config real_hardware.launch.py \
-    connection_type:=tcp ip_address:=192.168.1.1 calibrate_on_startup:=false
 ```
 
 `real_hardware.launch.py` full argument list:
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `connection_type` | `serial` | `serial` or `tcp` |
+| `connection_type` | `tcp` | `serial` or `tcp` |
 | `ip_address` | `192.168.1.1` | Arm IP (TCP mode) |
 | `tcp_port` | `5566` | KNI port (TCP mode) |
 | `serial_port` | `0` | Index N for `/dev/ttyS<N>` (serial mode) |
