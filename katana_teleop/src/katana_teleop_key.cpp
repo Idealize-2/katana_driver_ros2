@@ -1,458 +1,318 @@
 /*
- * UOS-ROS packages - Robot Operating System code by the University of Osnabrück
- * Copyright (C) 2011  University of Osnabrück
+ * katana_teleop_key.cpp — ROS 2 / KNI low-level keyboard teleop
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Controls motor 0 (pan) and motor 1 (lift) directly via the KNI SDK.
+ * Calibrates on startup, then moves the arm to a "straight up" home position
+ * before entering the teleop loop.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Usage:  ros2 run katana_teleop katana_teleop_key [<ip>] [<port>]
+ *         Defaults: ip=192.168.1.1  port=5566
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- *
- * katana_teleop_key.cpp
- *
- *  Created on: 21.04.2011
- *  Author: Henning Deeken <hdeeken@uos.de>
- *
- * based on a pr2 teleop by Kevin Watts
+ * Keys:
+ *   W / S   motor 1 (lift)  up / down
+ *   A / D   motor 0 (pan)   left / right
+ *   H       return to home (straight-up) position
+ *   E       enable / re-enable motors after freeze
+ *   F       freeze motors (hold in place, motors stay powered)
+ *   + / -   double / halve encoder step size
+ *   P       print current encoder values
+ *   Q       quit (freeze + power off)
  */
 
-#include <katana_teleop/katana_teleop_key.h>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <csignal>
+#include <cerrno>
+#include <algorithm>
+#include <memory>
+#include <vector>
+#include <termios.h>
+#include <unistd.h>
 
-namespace katana
+// KNI SDK
+#include "kniBase.h"
+#include "KNI/cdlSocket.h"
+#include "KNI/cplSerial.h"
+
+// ament_index to locate the KNI config file at runtime
+#include "ament_index_cpp/get_package_share_directory.hpp"
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+static constexpr int PAN_MOTOR   = 0;   // katana_motor1_pan_joint
+static constexpr int LIFT_MOTOR  = 1;   // katana_motor2_lift_joint
+static constexpr int DEFAULT_STEP = 1000; // encoder ticks per keypress (~7°)
+
+// KNI-frame radians for the "straight up" home position.
+// Formula: kni_rad = urdf_rad / urdf_flip + urdf_offset  (all arm flips = -1)
+//   motor0  urdf=0.0,     offset=0.8290  →  0.8290
+//   motor1  urdf=0.5648,  offset=2.2731  →  1.7083
+//   motor2  urdf=0.0,     offset=2.7957  →  2.7957
+//   motor3  urdf=0.0,     offset=2.9095  →  2.9095
+//   motor4  urdf=0.0,     offset=0.9013  →  0.9013
+static constexpr double HOME_KNI_RAD[5] = {0.8290, 1.7083, 2.7957, 2.9095, 0.9013};
+
+// ─── Global state (needed by signal handler) ─────────────────────────────────
+
+static struct termios g_cooked;
+static int g_kfd = 0;
+
+static std::unique_ptr<CCdlSocket>    g_device;
+static std::unique_ptr<CCplSerialCRC> g_protocol;
+static std::unique_ptr<CLMBase>       g_katana;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// Convert a KNI-frame radian angle to encoder counts for one motor.
+static int radToEnc(const TMotInit* init, double kni_rad)
 {
+    double enc_f = (kni_rad - init->angleOffset)
+                 / (init->rotationDirection * 2.0 * M_PI / init->encodersPerCycle);
+    return static_cast<int>(std::round(enc_f));
+}
 
-KatanaTeleopKey::KatanaTeleopKey() :
-  action_client("katana_arm_controller/joint_movement_action", true), gripper_("gripper_grasp_posture_controller", true)
+static void printState()
 {
-  ROS_INFO("KatanaTeleopKey starting...");
-  ros::NodeHandle n_;
-  ros::NodeHandle n_private("~");
+    try {
+        std::vector<int> enc = g_katana->getRobotEncoders(true);
+        std::printf("  encoders: M0(yaw)=%6d  M1(lift)=%6d  M2=%6d  M3=%6d  M4=%6d  M5=%6d\n",
+                    enc.size() > 0 ? enc[0] : 0,
+                    enc.size() > 1 ? enc[1] : 0,
+                    enc.size() > 2 ? enc[2] : 0,
+                    enc.size() > 3 ? enc[3] : 0,
+                    enc.size() > 4 ? enc[4] : 0,
+                    enc.size() > 5 ? enc[5] : 0);
 
-  n_.param("increment", increment, 0.017453293); // default increment = 1°
-  n_.param("increment_step", increment_step, 0.017453293); // default step_increment = 1°
-  n_.param("increment_step_scaling", increment_step_scaling, 1.0); // default scaling = 1
-
-  js_sub_ = n_.subscribe("joint_states", 1000, &KatanaTeleopKey::jointStateCallback, this);
-
-  got_joint_states_ = false;
-
-  jointIndex = 0;
-
-  action_client.waitForServer();
-  gripper_.waitForServer();
-
-  // Gets all of the joints
-  XmlRpc::XmlRpcValue joint_names;
-
-  // Gets all of the joints
-  if (!n_.getParam("katana_joints", joint_names))
-  {
-    ROS_ERROR("No joints given. (namespace: %s)", n_.getNamespace().c_str());
-  }
-  joint_names_.resize(joint_names.size());
-
-  if (joint_names.getType() != XmlRpc::XmlRpcValue::TypeArray)
-  {
-    ROS_ERROR("Malformed joint specification.  (namespace: %s)", n_.getNamespace().c_str());
-  }
-
-  for (size_t i = 0; (int)i < joint_names.size(); ++i)
-  {
-    XmlRpc::XmlRpcValue &name_value = joint_names[i];
-
-    if (name_value.getType() != XmlRpc::XmlRpcValue::TypeString)
-    {
-      ROS_ERROR("Array of joint names should contain all strings.  (namespace: %s)",
-          n_.getNamespace().c_str());
+    } catch (...) {
+        std::printf("  (could not read encoders)\n");
     }
+    std::fflush(stdout);
+}
 
-    joint_names_[i] = (std::string)name_value;
-  }
+static void restoreTerminal()
+{
+    tcsetattr(g_kfd, TCSANOW, &g_cooked);
+}
 
-  // Gets all of the gripper joints
-  XmlRpc::XmlRpcValue gripper_joint_names;
-
-  // Gets all of the joints
-  if (!n_.getParam("katana_gripper_joints", gripper_joint_names))
-  {
-    ROS_ERROR("No gripper joints given. (namespace: %s)", n_.getNamespace().c_str());
-  }
-
-  gripper_joint_names_.resize(gripper_joint_names.size());
-
-  if (gripper_joint_names.getType() != XmlRpc::XmlRpcValue::TypeArray)
-  {
-    ROS_ERROR("Malformed gripper joint specification.  (namespace: %s)", n_.getNamespace().c_str());
-  }
-  for (size_t i = 0; (int)i < gripper_joint_names.size(); ++i)
-  {
-    XmlRpc::XmlRpcValue &name_value = gripper_joint_names[i];
-    if (name_value.getType() != XmlRpc::XmlRpcValue::TypeString)
-    {
-      ROS_ERROR("Array of gripper joint names should contain all strings.  (namespace: %s)",
-          n_.getNamespace().c_str());
+static void cleanup()
+{
+    restoreTerminal();
+    if (g_katana) {
+        try { g_katana->freezeRobot();  } catch (...) {}
+        try { g_katana->switchRobotOff(); } catch (...) {}
     }
-
-    gripper_joint_names_[i] = (std::string)name_value;
-  }
-
-  combined_joints_.resize(joint_names_.size() + gripper_joint_names_.size());
-
-  for (unsigned int i = 0; i < joint_names_.size(); i++)
-  {
-    combined_joints_[i] = joint_names_[i];
-  }
-
-  for (unsigned int i = 0; i < gripper_joint_names_.size(); i++)
-  {
-    combined_joints_[joint_names_.size() + i] = gripper_joint_names_[i];
-  }
-
-  giveInfo();
-
 }
 
-void KatanaTeleopKey::giveInfo()
-{
-  ROS_INFO("---------------------------");
-  ROS_INFO("Use 'WS' to increase/decrease the joint position about one increment");
-  ROS_INFO("Current increment is set to: %f", increment);
-  ROS_INFO("Use '+#' to alter the increment by a increment/decrement of: %f", increment_step);
-  ROS_INFO("Use ',.' to alter the increment_step_size altering the scaling factor by -/+ 1.0");
-  ROS_INFO("Current scaling is set to: %f" , increment_step_scaling);
-  ROS_INFO("---------------------------");
-  ROS_INFO("Use 'R' to return to the arm's initial pose");
-  ROS_INFO("Use 'I' to display this manual and the current joint state");
-  ROS_INFO("---------------------------");
-  ROS_INFO("Use 'AD' to switch to the next/previous joint");
-  ROS_INFO("Use '0-9' to select a joint by number");
-  ROS_INFO("---------------------------");
-  ROS_INFO("Use 'OC' to open/close gripper");
+static void sigHandler(int) { cleanup(); exit(0); }
 
-  for (unsigned int i = 0; i < joint_names_.size(); i++)
-  {
-    ROS_INFO("Use '%d' to switch to Joint: '%s'",i, joint_names_[i].c_str());
-  }
-
-  for (unsigned int i = 0; i < gripper_joint_names_.size(); i++)
-  {
-    ROS_INFO("Use '%zu' to switch to Gripper Joint: '%s'",i + joint_names_.size(), gripper_joint_names_[i].c_str());
-  }
-
-  if (!current_pose_.name.empty())
-  {
-    ROS_INFO("---------------------------");
-    ROS_INFO("Current Joint Positions:");
-
-    for (unsigned int i = 0; i < current_pose_.position.size(); i++)
-    {
-      ROS_INFO("Joint %d - %s: %f", i, current_pose_.name[i].c_str(), current_pose_.position[i]);
-    }
-  }
-}
-
-void KatanaTeleopKey::jointStateCallback(const sensor_msgs::JointState::ConstPtr& js)
-{
-  // ROS_INFO("KatanaTeleopKeyboard received a new JointState");
-
-  current_pose_.name = js->name;
-  current_pose_.position = js->position;
-
-  if (!got_joint_states_)
-  {
-    // ROS_INFO("KatanaTeleopKeyboard received initial JointState");
-    initial_pose_.name = js->name;
-    initial_pose_.position = js->position;
-    got_joint_states_ = true;
-  }
-}
-
-bool KatanaTeleopKey::matchJointGoalRequest(double increment)
-{
-  bool found_match = false;
-
-  for (unsigned int i = 0; i < current_pose_.name.size(); i++)
-  {
-    if (current_pose_.name[i] == combined_joints_[jointIndex])
-    {
-      //ROS_DEBUG("incoming inc: %f - curren_pose: %f - resulting pose: %f ",increment, current_pose_.position[i], current_pose_.position[i] + increment);
-      movement_goal_.position.push_back(current_pose_.position[i] + increment);
-      found_match = true;
-      break;
-
-    }
-  }
-
-  return found_match;
-}
-
-void KatanaTeleopKey::keyboardLoop()
-{
-
-  char c;
-  bool dirty = true;
-  bool shutdown = false;
-
-  // get the console in raw mode
-  tcgetattr(kfd, &cooked);
-  memcpy(&raw, &cooked, sizeof(struct termios));
-  raw.c_lflag &= ~(ICANON | ECHO);
-  // Setting a new line, then end of file
-  raw.c_cc[VEOL] = 1;
-  raw.c_cc[VEOF] = 2;
-  tcsetattr(kfd, TCSANOW, &raw);
-
-  ros::Rate r(50.0); // 50 Hz
-
-  while (ros::ok() && !shutdown)
-  {
-    r.sleep();
-    ros::spinOnce();
-
-    if (!got_joint_states_)
-      continue;
-
-    dirty = false;
-
-    // get the next event from the keyboard
-    if (read(kfd, &c, 1) < 0)
-    {
-      perror("read():");
-      exit(-1);
-    }
-
-    size_t selected_joint_index;
-    switch (c)
-    {
-      // Increasing/Decreasing JointPosition
-      case KEYCODE_W:
-        if (matchJointGoalRequest(increment))
-        {
-          movement_goal_.name.push_back(combined_joints_[jointIndex]);
-          dirty = true;
-        }
-        else
-        {
-          ROS_WARN("movement with the desired joint: %s failed due to a mismatch with the current joint state", combined_joints_[jointIndex].c_str());
-        }
-
-        break;
-
-      case KEYCODE_S:
-        if (matchJointGoalRequest(-increment))
-        {
-          movement_goal_.name.push_back(combined_joints_[jointIndex]);
-          dirty = true;
-        }
-        else
-        {
-          ROS_WARN("movement with the desired joint: %s failed due to a mismatch with the current joint state", combined_joints_[jointIndex].c_str());
-        }
-
-        break;
-
-        // Switching active Joint
-      case KEYCODE_D:
-        // use this line if you want to use "the gripper" instead of the single gripper joints
-        jointIndex = (jointIndex + 1) % (joint_names_.size() + 1);
-
-        // use this line if you want to select specific gripper joints
-        //jointIndex = (jointIndex + 1) % combined_joints_.size();
-        break;
-
-      case KEYCODE_A:
-        // use this line if you want to use "the gripper" instead of the single gripper joints
-        jointIndex = (jointIndex - 1) % (joint_names_.size() + 1);
-
-        // use this line if you want to select specific gripper joints
-        //jointIndex = (jointIndex - 1) % combined_joints_.size();
-
-        break;
-
-      case KEYCODE_R:
-        ROS_INFO("Resetting arm to its initial pose..");
-
-        movement_goal_.name = initial_pose_.name;
-        movement_goal_.position = initial_pose_.position;
-        dirty = true;
-        break;
-
-      case KEYCODE_Q:
-        // in case of shutting down the teleop node the arm is moved back into it's initial pose
-        // assuming that this is a proper resting pose for the arm
-
-        ROS_INFO("Shutting down the Katana Teleoperation node...");
-        shutdown = true;
-        break;
-
-      case KEYCODE_I:
-        giveInfo();
-        break;
-
-      case KEYCODE_0:
-      case KEYCODE_1:
-      case KEYCODE_2:
-      case KEYCODE_3:
-      case KEYCODE_4:
-      case KEYCODE_5:
-      case KEYCODE_6:
-      case KEYCODE_7:
-      case KEYCODE_8:
-      case KEYCODE_9:
-        selected_joint_index = c - KEYCODE_0;
-
-        if (combined_joints_.size() > jointIndex)
-        {
-          ROS_DEBUG("You choose to adress joint no. %zu: %s", selected_joint_index, combined_joints_[9].c_str());
-          jointIndex = selected_joint_index;
-        }
-        else
-        {
-          ROS_WARN("Joint Index No. %zu can not be adressed!", jointIndex);
-        }
-        break;
-
-      case KEYCODE_PLUS:
-        increment += (increment_step * increment_step_scaling);
-        ROS_DEBUG("Increment increased to: %f",increment);
-        break;
-
-      case KEYCODE_NUMBER:
-        increment -= (increment_step * increment_step_scaling);
-        if (increment < 0)
-        {
-          increment = 0.0;
-        }
-        ROS_DEBUG("Increment decreased to: %f",increment);
-        break;
-
-      case KEYCODE_POINT:
-        increment_step_scaling += 1.0;
-        ROS_DEBUG("Increment_Scaling increased to: %f",increment_step_scaling);
-        break;
-
-      case KEYCODE_COMMA:
-        increment_step_scaling -= 1.0;
-        ROS_DEBUG("Increment_Scaling decreased to: %f",increment_step_scaling);
-        break;
-
-      case KEYCODE_C:
-        send_gripper_action(GRASP);
-        break;
-
-      case KEYCODE_O:
-        send_gripper_action(RELEASE);
-        break;
-
-    } // end switch case
-
-    if (dirty)
-    {
-      ROS_INFO("Sending new JointMovementActionGoal..");
-
-      katana_msgs::JointMovementGoal goal;
-      goal.jointGoal = movement_goal_;
-
-      for (size_t i = 0; i < goal.jointGoal.name.size(); i++)
-      {
-        ROS_DEBUG("Joint: %s to %f rad", goal.jointGoal.name[i].c_str(), goal.jointGoal.position[i]);
-      }
-
-      action_client.sendGoal(goal);
-      bool finished_within_time = action_client.waitForResult(ros::Duration(10.0));
-      if (!finished_within_time)
-      {
-        action_client.cancelGoal();
-        ROS_INFO("Timed out achieving goal!");
-      }
-      else
-      {
-        actionlib::SimpleClientGoalState state = action_client.getState();
-        if (state == actionlib::SimpleClientGoalState::SUCCEEDED)
-          ROS_INFO("Action finished: %s",state.toString().c_str());
-        else
-          ROS_INFO("Action failed: %s", state.toString().c_str());
-
-      }
-
-      movement_goal_.name.clear();
-      movement_goal_.position.clear();
-
-    } // end if dirty
-  }
-}
-
-bool KatanaTeleopKey::send_gripper_action(int goal_type)
-{
-  GCG goal;
-
-  switch (goal_type)
-  {
-    case GRASP:
-      goal.command.position = -0.44; 
-      // leave velocity and effort empty
-      break;
-
-    case RELEASE:
-      goal.command.position = 0.3; 
-      // leave velocity and effort empty
-      break;
-
-    default:
-      ROS_ERROR("unknown goal code (%d)", goal_type);
-      return false;
-
-  }
-
-
-  bool finished_within_time = false;
-  gripper_.sendGoal(goal);
-  finished_within_time = gripper_.waitForResult(ros::Duration(10.0));
-  if (!finished_within_time)
-  {
-    gripper_.cancelGoal();
-    ROS_WARN("Timed out achieving goal!");
-    return false;
-  }
-  else
-  {
-    actionlib::SimpleClientGoalState state = gripper_.getState();
-    bool success = (state == actionlib::SimpleClientGoalState::SUCCEEDED);
-    if (success)
-      ROS_INFO("Action finished: %s",state.toString().c_str());
-    else
-      ROS_WARN("Action failed: %s",state.toString().c_str());
-
-    return success;
-  }
-
-}
-}// end namespace "katana"
-
-void quit(int sig)
-{
-  tcsetattr(kfd, TCSANOW, &cooked);
-  exit(0);
-}
+// ─── main ────────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "katana_teleop_key");
+    const char* ip   = (argc > 1) ? argv[1] : "192.168.1.1";
+    const int   port = (argc > 2) ? std::atoi(argv[2]) : 5566;
 
-  katana::KatanaTeleopKey ktk;
+    // Locate config file via ament_index (works after: source install/setup.zsh)
+    std::string cfg;
+    try {
+        cfg = ament_index_cpp::get_package_share_directory("kni")
+            + "/KNI_4.3.0/configfiles400/katana6M180.cfg";
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+            "[teleop] Cannot locate kni share dir: %s\n"
+            "         Did you source install/setup.zsh ?\n", e.what());
+        return 1;
+    }
 
-  signal(SIGINT, quit);
+    std::printf("[teleop] Connecting to %s:%d ...\n", ip, port);
+    std::printf("[teleop] Config: %s\n", cfg.c_str());
 
-  ktk.keyboardLoop();
+    // ── Connect ──────────────────────────────────────────────────────────────
+    try {
+        g_device   = std::make_unique<CCdlSocket>(const_cast<char*>(ip), port);
+        g_protocol = std::make_unique<CCplSerialCRC>();
+        g_protocol->init(g_device.get());
+        g_katana   = std::make_unique<CLMBase>();
+        g_katana->create(cfg.c_str(), g_protocol.get());
+        g_katana->setGripperParameters(true, 30770, 15000);
+        std::printf("[teleop] Connected.\n");
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[teleop] Connection failed: %s\n", e.what());
+        return 1;
+    }
 
-  return 0;
+    signal(SIGINT,  sigHandler);
+    signal(SIGTERM, sigHandler);
+
+    // ── Calibrate ────────────────────────────────────────────────────────────
+    std::printf("[teleop] Clearing fault flags...\n");
+    try { g_katana->unBlock(); } catch (...) {}
+
+    std::printf("[teleop] Calibrating (arm moves to all joint limits) ...\n");
+    try {
+        g_katana->calibrate();
+        g_katana->unBlock();
+        std::printf("[teleop] Calibration complete.\n");
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[teleop] Calibration failed: %s\n", e.what());
+        cleanup();
+        return 1;
+    }
+
+    // ── Compute home encoder values ───────────────────────────────────────────
+    const TKatMOT* motors    = g_katana->GetBase()->GetMOT();
+    const int      num_motors = motors->cnt;
+    const int      arm_motors = std::min(5, num_motors);
+
+    std::vector<int> home_enc(num_motors);
+    // Seed everything at current calibrated position first
+    std::vector<int> cur = g_katana->getRobotEncoders(true);
+    for (int i = 0; i < num_motors; ++i)
+        home_enc[i] = (i < static_cast<int>(cur.size())) ? cur[i] : 0;
+
+    // Override the 5 arm joints with the computed straight-up targets,
+    // clamped to [enc_min+200, enc_max-200] — same margin the hardware interface uses.
+    // Some home positions (motor1 lift, motor3 elbow) land just outside the firmware
+    // soft limits; clamping gives the closest safe encoder without an "out of range" error.
+    static constexpr int kMargin = 200;
+    for (int i = 0; i < arm_motors; ++i) {
+        const TMotInit* init = motors->arr[i].GetInitialParameters();
+        const int raw     = radToEnc(init, HOME_KNI_RAD[i]);
+        const int enc_min = motors->arr[i].GetEncoderMinPos() + kMargin;
+        const int enc_max = motors->arr[i].GetEncoderMaxPos() - kMargin;
+        home_enc[i] = std::max(enc_min, std::min(enc_max, raw));
+        if (home_enc[i] != raw)
+            std::printf("[teleop]   motor%d home encoder = %d  (clamped from %d, limits [%d,%d])\n",
+                        i, home_enc[i], raw, enc_min, enc_max);
+        else
+            std::printf("[teleop]   motor%d home encoder = %d\n", i, home_enc[i]);
+    }
+
+    // ── Move to home ─────────────────────────────────────────────────────────
+    std::printf("[teleop] Moving to home (straight up) ...\n");
+    try {
+        g_katana->moveRobotToEnc(home_enc, /*wait=*/true, /*tol=*/100, /*timeout=*/30000);
+        std::printf("[teleop] Home position reached.\n");
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[teleop] Move to home failed: %s\n", e.what());
+        cleanup();
+        return 1;
+    }
+
+    // ── Help text ─────────────────────────────────────────────────────────────
+    std::printf("\n");
+    std::printf("  +-----------------------------------------+\n");
+    std::printf("  |   Katana 400 Low-Level Teleop (KNI)     |\n");
+    std::printf("  +-----------------------------------------+\n");
+    std::printf("  |  W / S  ->  motor1 (lift)   up / down   |\n");
+    std::printf("  |  A / D  ->  motor0 (pan)  left / right  |\n");
+    std::printf("  |  H      ->  go to home position          |\n");
+    std::printf("  |  E      ->  enable motors                |\n");
+    std::printf("  |  F      ->  freeze motors                |\n");
+    std::printf("  |  + / -  ->  double / halve step size     |\n");
+    std::printf("  |  P      ->  print encoder values         |\n");
+    std::printf("  |  Q      ->  quit                         |\n");
+    std::printf("  +-----------------------------------------+\n\n");
+    std::fflush(stdout);
+
+    // ── Raw terminal mode ─────────────────────────────────────────────────────
+    struct termios raw;
+    tcgetattr(g_kfd, &g_cooked);
+    std::memcpy(&raw, &g_cooked, sizeof(struct termios));
+    raw.c_lflag &= ~(ICANON | ECHO);
+    raw.c_cc[VEOL]  = 1;
+    raw.c_cc[VEOF]  = 2;
+    raw.c_cc[VMIN]  = 1;   // block until at least 1 byte is available
+    raw.c_cc[VTIME] = 0;   // no read timeout
+    tcsetattr(g_kfd, TCSANOW, &raw);
+
+    int step = DEFAULT_STEP;
+    std::printf("  step = %d enc ticks\n", step);
+    printState();
+
+    // ── Keyboard loop ─────────────────────────────────────────────────────────
+    char c;
+    while (true) {
+        ssize_t n = read(g_kfd, &c, 1);
+        if (n < 0) {
+            if (errno == EINTR) continue;   // interrupted by signal, retry
+            perror("[teleop] read()");
+            break;
+        }
+        if (n == 0) break;                  // EOF (stdin closed)
+        try {
+            switch (c) {
+                case 'w': case 'W':
+                    std::printf("  [lift +%d]  ", step);
+                    g_katana->inc(LIFT_MOTOR, step, /*wait=*/true, /*tol=*/100);
+                    printState();
+                    break;
+
+                case 's': case 'S':
+                    std::printf("  [lift -%d]  ", step);
+                    g_katana->dec(LIFT_MOTOR, step, /*wait=*/true, /*tol=*/100);
+                    printState();
+                    break;
+
+                case 'a': case 'A':
+                    std::printf("  [pan  +%d]  ", step);
+                    g_katana->inc(PAN_MOTOR, step, /*wait=*/true, /*tol=*/100);
+                    printState();
+                    break;
+
+                case 'd': case 'D':
+                    std::printf("  [pan  -%d]  ", step);
+                    g_katana->dec(PAN_MOTOR, step, /*wait=*/true, /*tol=*/100);
+                    printState();
+                    break;
+
+                case 'h': case 'H':
+                    std::printf("  [-> home]\n");
+                    g_katana->moveRobotToEnc(home_enc, true, 100, 30000);
+                    printState();
+                    break;
+
+                case 'e': case 'E':
+                    std::printf("  [motors ON]\n");
+                    g_katana->switchRobotOn();
+                    g_katana->unBlock();
+                    break;
+
+                case 'f': case 'F':
+                    std::printf("  [freeze]\n");
+                    g_katana->freezeRobot();
+                    break;
+
+                case '+': case '=':
+                    step *= 2;
+                    std::printf("  [step -> %d]\n", step);
+                    break;
+
+                case '-': case '_':
+                    step = std::max(50, step / 2);
+                    std::printf("  [step -> %d]\n", step);
+                    break;
+
+                case 'p': case 'P':
+                    printState();
+                    break;
+
+                case 'q': case 'Q':
+                    std::printf("  [quit]\n");
+                    cleanup();
+                    return 0;
+
+                default:
+                    break;
+            }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "  [KNI error] %s\n", e.what());
+            std::fflush(stderr);
+        }
+    }
+
+    cleanup();
+    return 0;
 }
-

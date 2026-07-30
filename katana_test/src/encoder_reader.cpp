@@ -92,7 +92,7 @@ int main(int argc, char ** argv)
         std::cout << "M" << i+1 << ":" << std::setw(7) << encoders[i] << " (" << std::fixed << std::setprecision(1) << deg << "°)  " << std::endl;
       }
       std::cout << "\r" << std::flush;
-      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
   } catch (const Exception & e) {
