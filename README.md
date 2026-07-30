@@ -89,6 +89,26 @@ source install/setup.bash   # or setup.zsh
 
 ---
 
+## Network Configuration (TCP/Ethernet)
+
+When connecting the Katana arm via a USB-to-Ethernet adapter (or directly to your computer's Ethernet port), you must configure your computer's network interface to communicate with the arm's static IP (default: `192.168.1.1`).
+
+1. Connect the Ethernet cable from the Katana control box to your computer.
+2. Open your network settings (e.g., Network Manager in Ubuntu).
+3. Select the wired connection associated with the arm and open its **IPv4 Settings**.
+4. Change the Method to **Manual**.
+5. Add a new address:
+   - **Address:** `192.168.1.100` (or any IP in the `192.168.1.x` subnet *except* `.1`)
+   - **Netmask:** `255.255.255.0`
+   - **Gateway:** Leave blank
+6. Save the settings and reconnect to apply.
+7. Verify the connection by pinging the arm:
+   ```bash
+   ping 192.168.1.1
+   ```
+
+---
+
 ## Running
 
 ### Option A — Everything in one command (recommended)
