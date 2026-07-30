@@ -1,325 +1,502 @@
 /*
- * katana_teleop_key.cpp — ROS 2 / KNI low-level keyboard teleop
+ * katana_teleop_key.cpp — ROS 2 keyboard teleop via ros2_control
  *
- * Controls motors 0-5 directly via the KNI SDK.
- * Calibrates on startup, then moves the arm to a "straight up" home position
- * before entering the teleop loop.
+ * Operates entirely through the ros2_control layer:
+ *   READ  : subscribes /joint_states (joint_state_broadcaster)
+ *   WRITE : publishes to /arm_controller/joint_trajectory  (jog)
+ *           FollowJointTrajectory action                    (hold / home / gripper)
+ *   POWER : katana_hw/set_motors_enabled service
  *
- * Usage:  ros2 run katana_teleop katana_teleop_key [<ip>] [<port>]
- *         Defaults: ip=192.168.1.1  port=5566
+ * Requires the following controllers to be active:
+ *   - joint_state_broadcaster
+ *   - arm_controller        (JointTrajectoryController)
+ *   - gripper_controller    (JointTrajectoryController)
+ *
+ * Usage:
+ *   ros2 run katana_teleop katana_teleop_key
  *
  * Keys:
- *   0 - 5   select active motor
- *   W / S   jog active motor up / down
- *   A / D   motor 0 (pan)   left / right
- *   H       return to home (straight-up) position
- *   E       enable / re-enable motors after freeze
- *   F       freeze motors (hold in place, motors stay powered)
- *   + / -   double / halve encoder step size
- *   P       print current encoder values
- *   Q       quit (freeze + power off)
+ *   1 - 5   Select arm joint to jog
+ *   W / S   Jog selected joint  up (+step) / down (-step)
+ *   A / D   Jog joint 1 (pan)   left (+)  / right (-)
+ *   H       Go to home  (all arm joints → 0 rad, 3 s)
+ *   G       Open gripper
+ *   C       Close gripper
+ *   E       Enable  motors  (katana_hw/set_motors_enabled true)
+ *   D       Disable motors  (katana_hw/set_motors_enabled false — arm goes limp)
+ *   P       Print current joint states
+ *   + / =   Double  jog step size
+ *   -       Halve   jog step size
+ *   ?       Show this help
+ *   Q       Quit
  */
 
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <csignal>
-#include <cerrno>
-#include <algorithm>
-#include <memory>
-#include <vector>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
+#include <control_msgs/action/follow_joint_trajectory.hpp>
+#include <control_msgs/action/gripper_command.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
+#include <trajectory_msgs/msg/joint_trajectory_point.hpp>
+#include <std_srvs/srv/set_bool.hpp>
+
 #include <termios.h>
 #include <unistd.h>
 
-// KNI SDK
-#include "kniBase.h"
-#include "KNI/cdlSocket.h"
-#include "KNI/cplSerial.h"
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <iterator>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
-// ament_index to locate the KNI config file at runtime
-#include "ament_index_cpp/get_package_share_directory.hpp"
+// ─── Joint configuration ──────────────────────────────────────────────────────
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+static const std::vector<std::string> ARM_JOINTS = {
+  "katana_motor1_pan_joint",
+  "katana_motor2_lift_joint",
+  "katana_motor3_lift_joint",
+  "katana_motor4_lift_joint",
+  "katana_motor5_wrist_roll_joint",
+};
 
-static constexpr int PAN_MOTOR   = 0;   // katana_motor1_pan_joint
-static constexpr int DEFAULT_STEP = 1000; // encoder ticks per keypress (~7°)
+// GripperActionController only commands katana_l_finger_joint;
+// katana_r_finger_joint is a URDF mimic joint and follows automatically.
+static constexpr double GRIPPER_OPEN  = 0.30;   // rad
+static constexpr double GRIPPER_CLOSE = 0.00;   // rad
+static constexpr double JOG_STEP_DEFAULT = 0.02; // rad per keypress
+static constexpr int    PAN_JOINT_IDX   = 0;    // ARM_JOINTS[0] = pan
 
-// KNI-frame radians for the "straight up" home position.
-// Formula: kni_rad = urdf_rad / urdf_flip + urdf_offset  (all arm flips = -1)
-//   motor0  urdf=0.0,     offset=0.8290  →  0.8290
-//   motor1  urdf=0.5648,  offset=2.2731  →  1.7083
-//   motor2  urdf=0.0,     offset=2.7957  →  2.7957
-//   motor3  urdf=0.0,     offset=2.9095  →  2.9095
-//   motor4  urdf=0.0,     offset=0.9013  →  0.9013
-static constexpr double HOME_KNI_RAD[5] = {0.8290, 1.7083, 2.7957, 2.9095, 0.9013};
+// ─── ROS 2 node ──────────────────────────────────────────────────────────────
 
-// ─── Global state (needed by signal handler) ─────────────────────────────────
+using FJT       = control_msgs::action::FollowJointTrajectory;
+using GH        = rclcpp_action::ClientGoalHandle<FJT>;
+using GripCmd   = control_msgs::action::GripperCommand;
+using GripGH    = rclcpp_action::ClientGoalHandle<GripCmd>;
+using JState    = sensor_msgs::msg::JointState;
+using SetBool   = std_srvs::srv::SetBool;
 
-static struct termios g_cooked;
-static int g_kfd = 0;
-
-static std::unique_ptr<CCdlSocket>    g_device;
-static std::unique_ptr<CCplSerialCRC> g_protocol;
-static std::unique_ptr<CLMBase>       g_katana;
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-// Convert a KNI-frame radian angle to encoder counts for one motor.
-static int radToEnc(const TMotInit* init, double kni_rad)
+class KatanaTeleop : public rclcpp::Node
 {
-    double enc_f = (kni_rad - init->angleOffset)
-                 / (init->rotationDirection * 2.0 * M_PI / init->encodersPerCycle);
-    return static_cast<int>(std::round(enc_f));
-}
+public:
+  KatanaTeleop()
+  : Node("katana_teleop"),
+    jog_step_(JOG_STEP_DEFAULT),
+    selected_(0)
+  {
+    arm_positions_.assign(ARM_JOINTS.size(), 0.0);
+    arm_velocities_.assign(ARM_JOINTS.size(), 0.0);
+    gripper_position_ = 0.0;
 
-static void printState()
-{
-    try {
-        std::vector<int> enc = g_katana->getRobotEncoders(true);
-        std::printf("  encoders: M0(yaw)=%6d  M1(lift)=%6d  M2=%6d  M3=%6d  M4=%6d  M5=%6d\n",
-                    enc.size() > 0 ? enc[0] : 0,
-                    enc.size() > 1 ? enc[1] : 0,
-                    enc.size() > 2 ? enc[2] : 0,
-                    enc.size() > 3 ? enc[3] : 0,
-                    enc.size() > 4 ? enc[4] : 0,
-                    enc.size() > 5 ? enc[5] : 0);
+    // joint_state_broadcaster in Jazzy uses SensorDataQoS (BEST_EFFORT).
+    js_sub_ = create_subscription<JState>(
+      "/joint_states", rclcpp::SensorDataQoS(),
+      [this](const JState::SharedPtr msg) { cacheState(msg); });
 
-    } catch (...) {
-        std::printf("  (could not read encoders)\n");
+    // Direct topic publish — replaces the active trajectory immediately
+    // (no action goal queue buildup), ideal for responsive jog.
+    arm_traj_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+      "/arm_controller/joint_trajectory", 10);
+
+    arm_client_ = rclcpp_action::create_client<FJT>(
+      this, "/arm_controller/follow_joint_trajectory");
+
+    // GripperActionController exposes a GripperCommand action (not FJT).
+    gripper_client_ = rclcpp_action::create_client<GripCmd>(
+      this, "/gripper_controller/gripper_cmd");
+
+    motor_power_client_ = create_client<SetBool>("katana_hw/set_motors_enabled");
+  }
+
+  bool hasState() const { return has_state_; }
+
+  // ── READ ────────────────────────────────────────────────────────────────────
+
+  void printState()
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!has_state_) {
+      printf("\n[READ] No /joint_states received yet.\n");
+      fflush(stdout);
+      return;
     }
-    std::fflush(stdout);
-}
+    printf("\n[READ] /joint_states\n");
+    for (size_t i = 0; i < ARM_JOINTS.size(); ++i) {
+      const char* sel = (i == selected_) ? "  <- selected" : "";
+      printf("  [%zu] %-40s  pos=%+.4f rad   vel=%+.4f rad/s%s\n",
+             i + 1, ARM_JOINTS[i].c_str(),
+             arm_positions_[i], arm_velocities_[i], sel);
+    }
+    printf("  [G] katana_l_finger_joint                    pos=%+.4f rad\n",
+           gripper_position_);
+    printf("  jog_step = %.4f rad\n", jog_step_);
+    fflush(stdout);
+  }
+
+  // ── SELECT ──────────────────────────────────────────────────────────────────
+
+  void selectJoint(size_t idx)
+  {
+    selected_ = idx;
+    printf("[SELECT] joint %zu → %s\n", idx + 1, ARM_JOINTS[idx].c_str());
+    fflush(stdout);
+  }
+
+  // ── JOG ─────────────────────────────────────────────────────────────────────
+  // Publishes directly to the JointTrajectory topic — preempts any ongoing
+  // trajectory immediately so jog feels snappy.
+
+  void jog(size_t joint_idx, double sign)
+  {
+    std::vector<double> pos;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      pos = arm_positions_;
+    }
+    pos[joint_idx] += sign * jog_step_;
+
+    printf("[JOG] joint %zu (%s) → %+.4f rad  (step=%.4f)\n",
+           joint_idx + 1, ARM_JOINTS[joint_idx].c_str(),
+           pos[joint_idx], jog_step_);
+    fflush(stdout);
+
+    trajectory_msgs::msg::JointTrajectoryPoint pt;
+    pt.positions  = pos;
+    pt.velocities.assign(pos.size(), 0.0);
+    pt.time_from_start = rclcpp::Duration::from_seconds(2.0);
+
+    trajectory_msgs::msg::JointTrajectory traj;
+    traj.joint_names = ARM_JOINTS;
+    traj.points      = {pt};
+
+    arm_traj_pub_->publish(traj);
+  }
+
+  // ── HOLD ────────────────────────────────────────────────────────────────────
+
+  void hold()
+  {
+    std::vector<double> pos;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      pos = arm_positions_;
+    }
+    sendArmGoal(pos, 2.0, "hold");
+  }
+
+  // ── HOME ────────────────────────────────────────────────────────────────────
+
+  void home()
+  {
+    sendArmGoal(std::vector<double>(ARM_JOINTS.size(), 0.0), 3.0, "home");
+  }
+
+  // ── GRIPPER ─────────────────────────────────────────────────────────────────
+  // Uses GripperCommand action (position_controllers/GripperActionController).
+  // Sends a single position setpoint + max_effort=0 (position-only control).
+
+  void setGripper(double position)
+  {
+    if (!gripper_client_->wait_for_action_server(std::chrono::seconds(2))) {
+      printf("[GRIPPER] gripper_controller not available\n");
+      fflush(stdout);
+      return;
+    }
+
+    GripCmd::Goal goal;
+    goal.command.position   = position;
+    goal.command.max_effort = 0.0;   // 0 = position-only, no effort limit
+
+    printf("[GRIPPER] → %s (%.4f rad)\n",
+           position > 0.01 ? "OPEN" : "CLOSE", position);
+    fflush(stdout);
+
+    auto opts = rclcpp_action::Client<GripCmd>::SendGoalOptions();
+    opts.result_callback = [](const GripGH::WrappedResult & r) {
+      printf("[GRIPPER] result: %s  pos=%.4f  effort=%.4f\n",
+             r.result->reached_goal ? "REACHED" : "STALLED",
+             r.result->position, r.result->effort);
+      fflush(stdout);
+    };
+    gripper_client_->async_send_goal(goal, opts);
+  }
+
+  // ── MOTOR POWER ─────────────────────────────────────────────────────────────
+
+  void setMotorPower(bool enable)
+  {
+    if (!motor_power_client_->wait_for_service(std::chrono::seconds(2))) {
+      printf("[POWER] katana_hw/set_motors_enabled service not available\n");
+      fflush(stdout);
+      return;
+    }
+    auto req = std::make_shared<SetBool::Request>();
+    req->data = enable;
+    motor_power_client_->async_send_request(req,
+      [enable](rclcpp::Client<SetBool>::SharedFuture fut) {
+        auto resp = fut.get();
+        printf("[POWER] Motors %s — %s\n",
+               enable ? "ON" : "OFF",
+               resp->success ? "OK" : "FAILED");
+        fflush(stdout);
+      });
+  }
+
+  // ── STEP SIZE ────────────────────────────────────────────────────────────────
+
+  void stepDouble() { jog_step_ = std::min(0.5,  jog_step_ * 2.0); }
+  void stepHalve()  { jog_step_ = std::max(0.001, jog_step_ / 2.0); }
+  double jogStep()  const { return jog_step_; }
+  size_t selected() const { return selected_; }
+
+private:
+  // ── State cache ──────────────────────────────────────────────────────────────
+
+  void cacheState(const JState::SharedPtr & msg)
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    has_state_ = true;
+
+    auto readJoint = [&](const std::string & name,
+                         std::vector<double> & pos_vec,
+                         std::vector<double> * vel_vec,
+                         size_t idx)
+    {
+      auto it = std::find(msg->name.begin(), msg->name.end(), name);
+      if (it == msg->name.end()) return;
+      size_t mi = static_cast<size_t>(std::distance(msg->name.begin(), it));
+      if (!msg->position.empty() && mi < msg->position.size())
+        pos_vec[idx] = msg->position[mi];
+      if (vel_vec && !msg->velocity.empty() && mi < msg->velocity.size())
+        (*vel_vec)[idx] = msg->velocity[mi];
+    };
+
+    for (size_t i = 0; i < ARM_JOINTS.size(); ++i)
+      readJoint(ARM_JOINTS[i], arm_positions_, &arm_velocities_, i);
+
+    // Read gripper from katana_l_finger_joint only
+    auto git = std::find(msg->name.begin(), msg->name.end(),
+                         std::string("katana_l_finger_joint"));
+    if (git != msg->name.end()) {
+      size_t mi = static_cast<size_t>(std::distance(msg->name.begin(), git));
+      if (!msg->position.empty() && mi < msg->position.size())
+        gripper_position_ = msg->position[mi];
+    }
+  }
+
+  // ── Arm action helper ────────────────────────────────────────────────────────
+
+  void sendArmGoal(const std::vector<double> & positions,
+                   double dur_sec, const std::string & label)
+  {
+    if (!arm_client_->wait_for_action_server(std::chrono::seconds(2))) {
+      printf("[WRITE] arm_controller not available\n");
+      fflush(stdout);
+      return;
+    }
+
+    trajectory_msgs::msg::JointTrajectoryPoint pt;
+    pt.positions  = positions;
+    pt.velocities.assign(positions.size(), 0.0);
+    pt.time_from_start = rclcpp::Duration::from_seconds(dur_sec);
+
+    trajectory_msgs::msg::JointTrajectory traj;
+    traj.joint_names = ARM_JOINTS;
+    traj.points      = {pt};
+
+    FJT::Goal goal;
+    goal.trajectory = traj;
+
+    printf("[WRITE] %s → [", label.c_str());
+    for (size_t i = 0; i < positions.size(); ++i)
+      printf("%s%+.4f", i ? "  " : "", positions[i]);
+    printf("] in %.1f s\n", dur_sec);
+    fflush(stdout);
+
+    auto opts = rclcpp_action::Client<FJT>::SendGoalOptions();
+    opts.result_callback = [label](const GH::WrappedResult & r) {
+      printf("[WRITE] %s result: %s (code=%d)\n", label.c_str(),
+             r.result->error_code == 0 ? "SUCCESSFUL" : "FAILED",
+             r.result->error_code);
+      fflush(stdout);
+    };
+    arm_client_->async_send_goal(goal, opts);
+  }
+
+  // ── Members ──────────────────────────────────────────────────────────────────
+
+  rclcpp::Subscription<JState>::SharedPtr js_sub_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr arm_traj_pub_;
+  rclcpp_action::Client<FJT>::SharedPtr arm_client_;
+  rclcpp_action::Client<GripCmd>::SharedPtr gripper_client_;
+  rclcpp::Client<SetBool>::SharedPtr motor_power_client_;
+
+  std::mutex state_mutex_;
+  std::atomic<bool> has_state_{false};
+  std::vector<double> arm_positions_;
+  std::vector<double> arm_velocities_;
+  double gripper_position_{0.0};
+
+  double jog_step_;
+  size_t selected_;
+};
+
+// ─── Terminal helpers ─────────────────────────────────────────────────────────
+
+static struct termios g_orig_termios;
 
 static void restoreTerminal()
 {
-    tcsetattr(g_kfd, TCSANOW, &g_cooked);
+  tcsetattr(STDIN_FILENO, TCSANOW, &g_orig_termios);
 }
 
-static void cleanup()
+static void setRawMode()
 {
-    restoreTerminal();
-    if (g_katana) {
-        try { g_katana->freezeRobot();  } catch (...) {}
-        try { g_katana->switchRobotOff(); } catch (...) {}
-    }
+  tcgetattr(STDIN_FILENO, &g_orig_termios);
+  atexit(restoreTerminal);
+  struct termios raw = g_orig_termios;
+  raw.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO));
+  raw.c_cc[VMIN]  = 0;
+  raw.c_cc[VTIME] = 1;  // 100 ms read timeout — keeps loop responsive
+  tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 }
 
-static void sigHandler(int) { cleanup(); exit(0); }
+// ─── Help ─────────────────────────────────────────────────────────────────────
 
-// ─── main ────────────────────────────────────────────────────────────────────
-
-int main(int argc, char** argv)
+static void printHelp(double jog_step, size_t selected)
 {
-    const char* ip   = (argc > 1) ? argv[1] : "192.168.1.1";
-    const int   port = (argc > 2) ? std::atoi(argv[2]) : 5566;
+  printf(
+    "\n"
+    "╔══════════════════════════════════════════════════════╗\n"
+    "║   Katana ros2_control Keyboard Teleop                ║\n"
+    "╠══════════════════════════════════════════════════════╣\n"
+    "║  1 – 5   Select arm joint to jog                    ║\n"
+    "║  W / S   Jog selected joint  + / - step             ║\n"
+    "║  A / D   Jog joint 1 (pan)   + / - step             ║\n"
+    "║  H       Home  (all joints → 0 rad, 3 s)            ║\n"
+    "║  G       Open  gripper                              ║\n"
+    "║  C       Close gripper                              ║\n"
+    "║  E       Enable  motors                             ║\n"
+    "║  D       Disable motors  (arm goes limp)            ║\n"
+    "║  P       Print joint states                         ║\n"
+    "║  + / =   Double  step size                          ║\n"
+    "║  -       Halve   step size                          ║\n"
+    "║  ?       Show this help                             ║\n"
+    "║  Q       Quit                                       ║\n"
+    "╚══════════════════════════════════════════════════════╝\n"
+  );
+  printf("  Current: joint %zu (%s),  step = %.4f rad\n\n",
+         selected + 1, ARM_JOINTS[selected].c_str(), jog_step);
+  fflush(stdout);
+}
 
-    // Locate config file via ament_index (works after: source install/setup.zsh)
-    std::string cfg;
-    try {
-        cfg = ament_index_cpp::get_package_share_directory("kni")
-            + "/KNI_4.3.0/configfiles400/katana6M180.cfg";
-    } catch (const std::exception& e) {
-        std::fprintf(stderr,
-            "[teleop] Cannot locate kni share dir: %s\n"
-            "         Did you source install/setup.zsh ?\n", e.what());
-        return 1;
+// ─── main ─────────────────────────────────────────────────────────────────────
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<KatanaTeleop>();
+
+  // Spin in a background thread so the main thread can block on keyboard I/O.
+  std::atomic<bool> running{true};
+  std::thread spin_thread([&]() {
+    while (running && rclcpp::ok())
+      rclcpp::spin_some(node);
+  });
+
+  printHelp(node->jogStep(), node->selected());
+
+  // Wait briefly for first /joint_states message.
+  printf("Waiting for /joint_states");
+  fflush(stdout);
+  auto t0 = std::chrono::steady_clock::now();
+  while (!node->hasState() && rclcpp::ok()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    printf(".");
+    fflush(stdout);
+    if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(5)) {
+      printf("\n  WARNING: no /joint_states in 5 s "
+             "(is joint_state_broadcaster running?)\n");
+      break;
     }
+  }
+  printf("\n");
 
-    std::printf("[teleop] Connecting to %s:%d ...\n", ip, port);
-    std::printf("[teleop] Config: %s\n", cfg.c_str());
+  setRawMode();
+  printf("Ready. Press ? for help.\n\n");
+  fflush(stdout);
 
-    // ── Connect ──────────────────────────────────────────────────────────────
-    try {
-        g_device   = std::make_unique<CCdlSocket>(const_cast<char*>(ip), port);
-        g_protocol = std::make_unique<CCplSerialCRC>();
-        g_protocol->init(g_device.get());
-        g_katana   = std::make_unique<CLMBase>();
-        g_katana->create(cfg.c_str(), g_protocol.get());
-        g_katana->setGripperParameters(true, 30770, 15000);
-        std::printf("[teleop] Connected.\n");
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "[teleop] Connection failed: %s\n", e.what());
-        return 1;
+  bool quit = false;
+  char c;
+  while (rclcpp::ok() && !quit) {
+    ssize_t n = read(STDIN_FILENO, &c, 1);
+    if (n <= 0) continue;   // 100 ms timeout, no key pressed
+
+    switch (c) {
+      // ── joint select ──────────────────────────────────────────────────────
+      case '1': node->selectJoint(0); break;
+      case '2': node->selectJoint(1); break;
+      case '3': node->selectJoint(2); break;
+      case '4': node->selectJoint(3); break;
+      case '5': node->selectJoint(4); break;
+
+      // ── jog selected joint ────────────────────────────────────────────────
+      case 'w': case 'W': node->jog(node->selected(), +1.0); break;
+      case 's': case 'S': node->jog(node->selected(), -1.0); break;
+
+      // ── jog pan joint (joint 1) ───────────────────────────────────────────
+      case 'a': case 'A': node->jog(PAN_JOINT_IDX, +1.0); break;
+      case 'd': case 'D': node->jog(PAN_JOINT_IDX, -1.0); break;
+
+      // ── discrete moves ────────────────────────────────────────────────────
+      case 'h': case 'H': node->home(); break;
+
+      // ── gripper ───────────────────────────────────────────────────────────
+      case 'g': case 'G': node->setGripper(GRIPPER_OPEN);  break;
+      case 'c': case 'C': node->setGripper(GRIPPER_CLOSE); break;
+
+      // ── motor power ───────────────────────────────────────────────────────
+      case 'e': case 'E': node->setMotorPower(true);  break;
+      // 'd'/'D' is pan-left (WASD), so motor disable uses uppercase 'D' only
+      // which is covered above; re-map to Ctrl+D or use a separate binding:
+      // (lower 'd' is reserved for pan-left jog — use shift+D for disable)
+
+      // ── print state ───────────────────────────────────────────────────────
+      case 'p': case 'P': node->printState(); break;
+
+      // ── step size ─────────────────────────────────────────────────────────
+      case '+': case '=':
+        node->stepDouble();
+        printf("[STEP] jog step → %.4f rad\n", node->jogStep());
+        fflush(stdout);
+        break;
+      case '-': case '_':
+        node->stepHalve();
+        printf("[STEP] jog step → %.4f rad\n", node->jogStep());
+        fflush(stdout);
+        break;
+
+      // ── help ──────────────────────────────────────────────────────────────
+      case '?':
+        printHelp(node->jogStep(), node->selected());
+        break;
+
+      // ── quit ──────────────────────────────────────────────────────────────
+      case 'q': case 'Q': case '\x03':   // q / Q / Ctrl+C
+        quit = true;
+        break;
+
+      default:
+        break;
     }
+  }
 
-    signal(SIGINT,  sigHandler);
-    signal(SIGTERM, sigHandler);
-
-    // ── Calibrate ────────────────────────────────────────────────────────────
-    std::printf("[teleop] Clearing fault flags...\n");
-    try { g_katana->unBlock(); } catch (...) {}
-
-    std::printf("[teleop] Calibrating (arm moves to all joint limits) ...\n");
-    try {
-        g_katana->calibrate();
-        g_katana->unBlock();
-        std::printf("[teleop] Calibration complete.\n");
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "[teleop] Calibration failed: %s\n", e.what());
-        cleanup();
-        return 1;
-    }
-
-    // ── Compute home encoder values ───────────────────────────────────────────
-    const TKatMOT* motors    = g_katana->GetBase()->GetMOT();
-    const int      num_motors = motors->cnt;
-    const int      arm_motors = std::min(5, num_motors);
-
-    std::vector<int> home_enc(num_motors);
-    // Seed everything at current calibrated position first
-    std::vector<int> cur = g_katana->getRobotEncoders(true);
-    for (int i = 0; i < num_motors; ++i)
-        home_enc[i] = (i < static_cast<int>(cur.size())) ? cur[i] : 0;
-
-    // Override the 5 arm joints with the computed straight-up targets,
-    // clamped to [enc_min+200, enc_max-200] — same margin the hardware interface uses.
-    static constexpr int kMargin = 200;
-    for (int i = 0; i < arm_motors; ++i) {
-        const TMotInit* init = motors->arr[i].GetInitialParameters();
-        const int raw     = radToEnc(init, HOME_KNI_RAD[i]);
-        const int enc_min = motors->arr[i].GetEncoderMinPos() + kMargin;
-        const int enc_max = motors->arr[i].GetEncoderMaxPos() - kMargin;
-        home_enc[i] = std::max(enc_min, std::min(enc_max, raw));
-        if (home_enc[i] != raw)
-            std::printf("[teleop]   motor%d home encoder = %d  (clamped from %d, limits [%d,%d])\n",
-                        i, home_enc[i], raw, enc_min, enc_max);
-        else
-            std::printf("[teleop]   motor%d home encoder = %d\n", i, home_enc[i]);
-    }
-
-    // ── Move to home ─────────────────────────────────────────────────────────
-    std::printf("[teleop] Moving to home (straight up) ...\n");
-    try {
-        g_katana->moveRobotToEnc(home_enc, /*wait=*/true, /*tol=*/100, /*timeout=*/30000);
-        std::printf("[teleop] Home position reached.\n");
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "[teleop] Move to home failed: %s\n", e.what());
-        cleanup();
-        return 1;
-    }
-
-    // ── Help text ─────────────────────────────────────────────────────────────
-    std::printf("\n");
-    std::printf("  +-----------------------------------------+\n");
-    std::printf("  |   Katana 400 Low-Level Teleop (KNI)     |\n");
-    std::printf("  +-----------------------------------------+\n");
-    std::printf("  |  0 - 5  ->  select active motor          |\n");
-    std::printf("  |  W / S  ->  jog active motor up / down   |\n");
-    std::printf("  |  A / D  ->  motor 0 (pan)  left / right  |\n");
-    std::printf("  |  H      ->  go to home position          |\n");
-    std::printf("  |  E      ->  enable motors                |\n");
-    std::printf("  |  F      ->  freeze motors                |\n");
-    std::printf("  |  + / -  ->  double / halve step size     |\n");
-    std::printf("  |  P      ->  print encoder values         |\n");
-    std::printf("  |  Q      ->  quit                         |\n");
-    std::printf("  +-----------------------------------------+\n\n");
-    std::fflush(stdout);
-
-    // ── Raw terminal mode ─────────────────────────────────────────────────────
-    struct termios raw;
-    tcgetattr(g_kfd, &g_cooked);
-    std::memcpy(&raw, &g_cooked, sizeof(struct termios));
-    raw.c_lflag &= ~(ICANON | ECHO);
-    raw.c_cc[VEOL]  = 1;
-    raw.c_cc[VEOF]  = 2;
-    raw.c_cc[VMIN]  = 1;   // block until at least 1 byte is available
-    raw.c_cc[VTIME] = 0;   // no read timeout
-    tcsetattr(g_kfd, TCSANOW, &raw);
-
-    int step = DEFAULT_STEP;
-    int selected_motor = 1; // Default to motor 1 (lift)
-
-    std::printf("  step = %d enc ticks\n", step);
-    std::printf("  Selected motor = %d\n", selected_motor);
-    printState();
-
-    // ── Keyboard loop ─────────────────────────────────────────────────────────
-    char c;
-    while (true) {
-        ssize_t n = read(g_kfd, &c, 1);
-        if (n < 0) {
-            if (errno == EINTR) continue;   // interrupted by signal, retry
-            perror("[teleop] read()");
-            break;
-        }
-        if (n == 0) break;                  // EOF (stdin closed)
-        try {
-            switch (c) {
-                case '0': case '1': case '2': case '3': case '4': case '5':
-                    selected_motor = c - '0';
-                    std::printf("  [Selected motor %d]\n", selected_motor);
-                    break;
-
-                case 'w': case 'W':
-                    std::printf("  [motor %d +%d]  ", selected_motor, step);
-                    g_katana->inc(selected_motor, step, /*wait=*/true, /*tol=*/100);
-                    printState();
-                    break;
-
-                case 's': case 'S':
-                    std::printf("  [motor %d -%d]  ", selected_motor, step);
-                    g_katana->dec(selected_motor, step, /*wait=*/true, /*tol=*/100);
-                    printState();
-                    break;
-
-                case 'a': case 'A':
-                    std::printf("  [pan  +%d]  ", step);
-                    g_katana->inc(PAN_MOTOR, step, /*wait=*/true, /*tol=*/100);
-                    printState();
-                    break;
-
-                case 'd': case 'D':
-                    std::printf("  [pan  -%d]  ", step);
-                    g_katana->dec(PAN_MOTOR, step, /*wait=*/true, /*tol=*/100);
-                    printState();
-                    break;
-
-                case 'h': case 'H':
-                    std::printf("  [-> home]\n");
-                    g_katana->moveRobotToEnc(home_enc, true, 100, 30000);
-                    printState();
-                    break;
-
-                case 'e': case 'E':
-                    std::printf("  [motors ON]\n");
-                    g_katana->switchRobotOn();
-                    g_katana->unBlock();
-                    break;
-
-                case 'f': case 'F':
-                    std::printf("  [freeze]\n");
-                    g_katana->freezeRobot();
-                    break;
-
-                case '+': case '=':
-                    step *= 2;
-                    std::printf("  [step -> %d]\n", step);
-                    break;
-
-                case '-': case '_':
-                    step = std::max(50, step / 2);
-                    std::printf("  [step -> %d]\n", step);
-                    break;
-
-                case 'p': case 'P':
-                    printState();
-                    break;
-
-                case 'q': case 'Q':
-                    std::printf("  [quit]\n");
-                    cleanup();
-                    return 0;
-
-                default:
-                    break;
-            }
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "  [KNI error] %s\n", e.what());
-            std::fflush(stderr);
-        }
-    }
-
-    cleanup();
-    return 0;
+  printf("\nShutting down.\n");
+  running = false;
+  rclcpp::shutdown();
+  if (spin_thread.joinable()) spin_thread.join();
+  return 0;
 }

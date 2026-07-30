@@ -16,9 +16,13 @@ find_package(rclcpp_action REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 
 # KNI SDK (used by tutorial 4 — ik_pose_mover)
 find_package(kni REQUIRED)
+
+# Derive KNI library directory from the CMake config location
+# kni_DIR = <prefix>/share/kni/cmake → go up 3 levels
 get_filename_component(kni_PREFIX "${kni_DIR}/../../.." ABSOLUTE)
 set(KNI_INCLUDE_DIR "${kni_PREFIX}/include")
 set(KNI_LIB_DIR     "${kni_PREFIX}/lib")
@@ -72,6 +76,7 @@ ros2_tutorial(test_inverse_kinematics)
 # Tutorial 4: Calibrate → limp & observe → IK check → moveRobotTo (direct KNI)
 add_executable(ik_pose_mover src/ik_pose_mover.cpp)
 target_include_directories(ik_pose_mover PRIVATE ${KNI_INCLUDE_DIR})
+ament_target_dependencies(ik_pose_mover ament_index_cpp)
 target_link_libraries(ik_pose_mover
   ${KNI_LIB_DIR}/libKNIBase.so
   ${KNI_LIB_DIR}/libKNI_LM.so

@@ -1,20 +1,27 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+            schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>katana_teleop</name>
-  <version>2.0.0</version>
+  <version>2.1.0</version>
   <description>
-    Low-level KNI keyboard teleop for the Neuronics Katana 400 6M180 arm.
-    Controls motor 0 (pan) and motor 1 (lift) directly via the KNI SDK.
-    Calibrates on startup and moves to a straight-up home position before the loop.
+    Keyboard teleop for the Katana 400 arm via ros2_control.
+    Subscribes /joint_states, publishes JointTrajectory for jogging,
+    uses FollowJointTrajectory actions for home/hold/gripper moves,
+    and calls katana_hw/set_motors_enabled for motor power control.
+    Requires arm_controller and gripper_controller to be active.
   </description>
   <maintainer email="kukakthesery4@gmail.com">Kay</maintainer>
   <license>GPL-2.0-or-later</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>ament_index_cpp</depend>
-  <depend>kni</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>sensor_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>std_srvs</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

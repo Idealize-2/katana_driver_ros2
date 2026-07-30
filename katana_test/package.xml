@@ -3,8 +3,12 @@
             schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>katana_test</name>
-  <version>0.1.0</version>
-  <description>Interactive keyboard tester for ros2_control read/write on the Katana arm.</description>
+  <version>0.2.0</version>
+  <description>
+    Diagnostic and test tools for the Katana 400 arm.
+    Contains low-level KNI utilities (encoder_reader, arm_disable_encoder,
+    katana_kni_teleop) and MoveIt-based pose_runner.
+  </description>
 
   <maintainer email="kukakthesery4@gmail.com">kay</maintainer>
   <license>BSD-3-Clause</license>
@@ -12,11 +16,6 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
-  <depend>rclcpp_action</depend>
-  <depend>sensor_msgs</depend>
-  <depend>control_msgs</depend>
-  <depend>trajectory_msgs</depend>
-  <depend>std_srvs</depend>
   <depend>ament_index_cpp</depend>
   <depend>kni</depend>
   <depend>moveit_ros_planning_interface</depend>

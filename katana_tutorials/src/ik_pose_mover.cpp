@@ -24,8 +24,8 @@
 //   Stop ros2_control (real_hardware.launch.py) before running — both
 //   processes fight over the same TCP socket.
 //
-// RUN:
-//   ros2 run katana_tutorials ik_pose_mover tcp 192.168.1.1 /path/to/cfg
+// RUN (all args optional — defaults to tcp 192.168.1.1 and automatic config resolution):
+//   ros2 run katana_tutorials ik_pose_mover
 // =============================================================================
 
 #include <atomic>
@@ -38,6 +38,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+// ament_index — resolves the kni share dir at runtime
+#include "ament_index_cpp/get_package_share_directory.hpp"
 
 // KNI SDK
 #include "kniBase.h"
@@ -65,24 +68,39 @@ static void printPose(const char * label,
             << "\n";
 }
 
+static std::string defaultConfigFile()
+{
+  try {
+    return ament_index_cpp::get_package_share_directory("kni")
+           + "/KNI_4.3.0/configfiles400/katana6M180.cfg";
+  } catch (...) {
+    return "";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
 int main(int argc, char ** argv)
 {
-  if (argc < 4) {
+  // ── Parse args with defaults ───────────────────────────────────────────────
+  const std::string conn_type   = (argc > 1) ? argv[1] : "tcp";
+  const std::string addr        = (argc > 2) ? argv[2] : "192.168.1.1";
+  const std::string config_file = (argc > 3) ? argv[3] : defaultConfigFile();
+
+  if (config_file.empty()) {
     std::cerr
-      << "Usage:   ik_pose_mover <tcp|serial> <IP_or_PortNum> <CONFIG_FILE>\n"
+      << "Usage:   ik_pose_mover [tcp|serial] [IP_or_PortNum] [CONFIG_FILE]\n"
       << "Example: ik_pose_mover tcp 192.168.1.1 "
       << "/path/to/kni/KNI_4.3.0/configfiles400/katana6M180.cfg\n\n"
-      << "NOTE: stop ros2_control (real_hardware.launch.py) before running.\n";
+      << "ERROR: Could not locate fallback kni config file. Did you source install/setup.bash?\n";
     return 1;
   }
 
-  const std::string conn_type  = argv[1];
-  const std::string addr       = argv[2];
-  const std::string config_file = argv[3];
+  std::cout << "[ik_pose_mover] conn_type=" << conn_type
+            << "  addr=" << addr
+            << "\n[ik_pose_mover] cfg=" << config_file << "\n\n";
 
   // Declare outside try so destructors run after catch.
   std::unique_ptr<CCdlBase>       device;

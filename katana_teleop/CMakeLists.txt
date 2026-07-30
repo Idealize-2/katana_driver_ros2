@@ -1,35 +1,43 @@
 cmake_minimum_required(VERSION 3.14)
 project(katana_teleop)
 
-find_package(ament_cmake REQUIRED)
-find_package(ament_index_cpp REQUIRED)
-find_package(kni REQUIRED)
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Derive kni install prefix from the CMake config dir
-# kni_DIR = <prefix>/share/kni/cmake  →  go up 3 levels for prefix
-get_filename_component(kni_PREFIX "${kni_DIR}/../../.." ABSOLUTE)
-set(KNI_INCLUDE_DIR "${kni_PREFIX}/include")
-set(KNI_LIB_DIR     "${kni_PREFIX}/lib")
+# ── Dependencies ──────────────────────────────────────────────────────────────
+
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(control_msgs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+
+# ── katana_teleop_key (ros2_control keyboard teleop) ─────────────────────────
 
 add_executable(katana_teleop_key src/katana_teleop_key.cpp)
 
-target_include_directories(katana_teleop_key PRIVATE
-    ${KNI_INCLUDE_DIR}
-)
-
 ament_target_dependencies(katana_teleop_key
-    ament_index_cpp
+  rclcpp
+  rclcpp_action
+  sensor_msgs
+  control_msgs
+  trajectory_msgs
+  std_srvs
 )
 
-target_link_libraries(katana_teleop_key
-    ${KNI_LIB_DIR}/libKNIBase.so
-    ${KNI_LIB_DIR}/libKNI_LM.so
-    ${KNI_LIB_DIR}/libKNI_InvKin.so
-    ${KNI_LIB_DIR}/libknicommon.a
-)
+# ── Install ───────────────────────────────────────────────────────────────────
 
 install(TARGETS katana_teleop_key
-    DESTINATION lib/${PROJECT_NAME}
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
 )
 
 ament_package()
