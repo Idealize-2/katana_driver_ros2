@@ -1,7 +1,7 @@
 /*
  * katana_teleop_key.cpp — ROS 2 / KNI low-level keyboard teleop
  *
- * Controls motor 0 (pan) and motor 1 (lift) directly via the KNI SDK.
+ * Controls motors 0-5 directly via the KNI SDK.
  * Calibrates on startup, then moves the arm to a "straight up" home position
  * before entering the teleop loop.
  *
@@ -9,7 +9,8 @@
  *         Defaults: ip=192.168.1.1  port=5566
  *
  * Keys:
- *   W / S   motor 1 (lift)  up / down
+ *   0 - 5   select active motor
+ *   W / S   jog active motor up / down
  *   A / D   motor 0 (pan)   left / right
  *   H       return to home (straight-up) position
  *   E       enable / re-enable motors after freeze
@@ -42,7 +43,6 @@
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 static constexpr int PAN_MOTOR   = 0;   // katana_motor1_pan_joint
-static constexpr int LIFT_MOTOR  = 1;   // katana_motor2_lift_joint
 static constexpr int DEFAULT_STEP = 1000; // encoder ticks per keypress (~7°)
 
 // KNI-frame radians for the "straight up" home position.
@@ -174,8 +174,6 @@ int main(int argc, char** argv)
 
     // Override the 5 arm joints with the computed straight-up targets,
     // clamped to [enc_min+200, enc_max-200] — same margin the hardware interface uses.
-    // Some home positions (motor1 lift, motor3 elbow) land just outside the firmware
-    // soft limits; clamping gives the closest safe encoder without an "out of range" error.
     static constexpr int kMargin = 200;
     for (int i = 0; i < arm_motors; ++i) {
         const TMotInit* init = motors->arr[i].GetInitialParameters();
@@ -206,8 +204,9 @@ int main(int argc, char** argv)
     std::printf("  +-----------------------------------------+\n");
     std::printf("  |   Katana 400 Low-Level Teleop (KNI)     |\n");
     std::printf("  +-----------------------------------------+\n");
-    std::printf("  |  W / S  ->  motor1 (lift)   up / down   |\n");
-    std::printf("  |  A / D  ->  motor0 (pan)  left / right  |\n");
+    std::printf("  |  0 - 5  ->  select active motor          |\n");
+    std::printf("  |  W / S  ->  jog active motor up / down   |\n");
+    std::printf("  |  A / D  ->  motor 0 (pan)  left / right  |\n");
     std::printf("  |  H      ->  go to home position          |\n");
     std::printf("  |  E      ->  enable motors                |\n");
     std::printf("  |  F      ->  freeze motors                |\n");
@@ -229,7 +228,10 @@ int main(int argc, char** argv)
     tcsetattr(g_kfd, TCSANOW, &raw);
 
     int step = DEFAULT_STEP;
+    int selected_motor = 1; // Default to motor 1 (lift)
+
     std::printf("  step = %d enc ticks\n", step);
+    std::printf("  Selected motor = %d\n", selected_motor);
     printState();
 
     // ── Keyboard loop ─────────────────────────────────────────────────────────
@@ -244,15 +246,20 @@ int main(int argc, char** argv)
         if (n == 0) break;                  // EOF (stdin closed)
         try {
             switch (c) {
+                case '0': case '1': case '2': case '3': case '4': case '5':
+                    selected_motor = c - '0';
+                    std::printf("  [Selected motor %d]\n", selected_motor);
+                    break;
+
                 case 'w': case 'W':
-                    std::printf("  [lift +%d]  ", step);
-                    g_katana->inc(LIFT_MOTOR, step, /*wait=*/true, /*tol=*/100);
+                    std::printf("  [motor %d +%d]  ", selected_motor, step);
+                    g_katana->inc(selected_motor, step, /*wait=*/true, /*tol=*/100);
                     printState();
                     break;
 
                 case 's': case 'S':
-                    std::printf("  [lift -%d]  ", step);
-                    g_katana->dec(LIFT_MOTOR, step, /*wait=*/true, /*tol=*/100);
+                    std::printf("  [motor %d -%d]  ", selected_motor, step);
+                    g_katana->dec(selected_motor, step, /*wait=*/true, /*tol=*/100);
                     printState();
                     break;
 
