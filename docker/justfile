@@ -1,0 +1,42 @@
+# Default recipe: print available options
+default:
+    @just --list
+
+# Grant X11 access for GUI apps (RViz)
+xhost-allow:
+    @xhost +local:root > /dev/null
+
+# Build the Docker image
+build:
+    docker compose build
+
+# Run full system with RViz (TCP mode, default IP 192.168.1.1)
+up: xhost-allow
+    docker compose up
+
+# Run full system in background (detached mode)
+up-d: xhost-allow
+    docker compose up -d
+
+# Stop running container
+down:
+    docker compose down
+
+# Open an interactive bash shell in running container
+shell:
+    docker exec -it katana_driver_container bash -c "source /opt/ros/jazzy/setup.bash && if [ -f /katana_ws/install/setup.bash ]; then source /katana_ws/install/setup.bash; fi && exec bash"
+# Run hardware driver only
+hardware: xhost-allow
+    docker compose run --rm katana_system ros2 launch katana400_moveit_config real_hardware.launch.py connection_type:=tcp ip_address:=192.168.1.1
+
+# Run MoveIt move_group only
+move-group:
+    docker compose run --rm katana_system ros2 launch katana400_moveit_config move_group.launch.py
+
+# Run RViz only
+rviz: xhost-allow
+    docker compose run --rm katana_system ros2 launch katana400_moveit_config moveit_rviz.launch.py
+
+# Run teleoperation keyboard node inside running container
+teleop:
+	docker exec -it katana_driver_container /docker-entrypoint.sh ros2 run katana_teleop katana_teleop_key
